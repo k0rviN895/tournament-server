@@ -12,12 +12,13 @@ const io = new Server(server, {
 const rooms = new Map();
 
 io.on('connection', (socket) => {
-    console.log('Игрок подключился:', socket.id);
+    console.log(`[SERVER] Игрок подключился: ${socket.id}`);
 
-    // Создание комнаты
+    // --- СОЗДАНИЕ КОМНАТЫ ---
     socket.on('create_room', (playerName) => {
         const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-        
+        console.log(`[SERVER] create_room: имя=${playerName}, комната=${roomId}`);
+
         const room = {
             id: roomId,
             admin: socket.id,
@@ -32,32 +33,29 @@ io.on('connection', (socket) => {
             seed: null,
             startTime: null
         };
-        
+
         rooms.set(roomId, room);
         socket.join(roomId);
         socket.emit('room_created', roomId);
-        
-        // НОВОЕ: отправляем обновлённый список игроков (с админом)
         io.to(roomId).emit('room_update', room.players);
-        
-        console.log(`Комната ${roomId} создана игроком ${playerName}`);
+        console.log(`[SERVER] Комната ${roomId} создана, игроков: ${room.players.length}`);
     });
 
-    // Присоединение к комнате
+    // --- ПРИСОЕДИНЕНИЕ К КОМНАТЕ ---
     socket.on('join_room', (data) => {
         const { roomId, playerName } = data;
+        console.log(`[SERVER] join_room: комната=${roomId}, имя=${playerName}`);
+
         const room = rooms.get(roomId);
-        
         if (!room) {
             socket.emit('error', 'Комната не найдена');
             return;
         }
-        
         if (room.state !== 'waiting') {
             socket.emit('error', 'Игра уже началась');
             return;
         }
-        
+
         room.players.push({
             id: socket.id,
             name: playerName,
@@ -65,79 +63,90 @@ io.on('connection', (socket) => {
             finished: false,
             distance: 0
         });
-        
+
         socket.join(roomId);
         socket.emit('room_joined', { roomId: roomId });
         io.to(roomId).emit('room_update', room.players);
-        console.log(`${playerName} присоединился к комнате ${roomId}`);
+        console.log(`[SERVER] ${playerName} присоединился, всего игроков: ${room.players.length}`);
     });
 
-    // Переключение готовности
+    // --- ПЕРЕКЛЮЧЕНИЕ ГОТОВНОСТИ ---
     socket.on('player_ready', (roomId) => {
         const room = rooms.get(roomId);
         if (!room) return;
-        
+
         const player = room.players.find(p => p.id === socket.id);
         if (player) {
             player.isReady = !player.isReady;
-            console.log(`Игрок ${player.name} переключил готовность: ${player.isReady}`);
+            console.log(`[SERVER] Готовность: ${player.name} -> ${player.isReady}`);
             io.to(roomId).emit('room_update', room.players);
         } else {
-            console.log(`Игрок с сокетом ${socket.id} не найден в комнате ${roomId}`);
+            console.log(`[SERVER] Игрок ${socket.id} не найден в комнате ${roomId}`);
         }
     });
 
-    // Выход из комнаты
+    // --- ВЫХОД ИЗ КОМНАТЫ ---
     socket.on('leave_room', (roomId) => {
         handleLeave(socket, roomId);
     });
 
-    // Старт гонки (только админ)
+    // --- СТАРТ ГОНКИ (только админ) ---
     socket.on('start_race', (roomId) => {
+        console.log(`[SERVER] start_race получен для комнаты ${roomId}`);
         const room = rooms.get(roomId);
-        if (!room || socket.id !== room.admin) return;
-        
+        if (!room) {
+            console.log(`[SERVER] Комната ${roomId} не найдена`);
+            return;
+        }
+        if (socket.id !== room.admin) {
+            console.log(`[SERVER] Отправитель не админ (админ: ${room.admin}, отправитель: ${socket.id})`);
+            socket.emit('error', 'Только администратор может начать гонку');
+            return;
+        }
+
         const allReady = room.players.every(p => p.isReady);
+        console.log(`[SERVER] Все игроки готовы? ${allReady}`);
         if (!allReady) {
             socket.emit('error', 'Не все игроки готовы');
             return;
         }
-        
+
         room.state = 'countdown';
         room.seed = Date.now();
         room.startTime = Date.now() + 5000;
-        
+
         io.to(roomId).emit('start_countdown', {
             seed: room.seed,
             startServerTime: room.startTime
         });
-        
-        console.log(`Гонка в комнате ${roomId} начнётся через 5 секунд`);
+        console.log(`[SERVER] Гонка в комнате ${roomId} начнётся через 5 секунд (seed=${room.seed})`);
     });
 
-    // Финиш игрока
+    // --- ФИНИШ ИГРОКА ---
     socket.on('player_finished', (data) => {
         const { roomId, distance } = data;
         const room = rooms.get(roomId);
         if (!room) return;
-        
+
         const player = room.players.find(p => p.id === socket.id);
         if (!player || player.finished) return;
-        
+
         player.distance = distance;
         player.finished = true;
-        
+        console.log(`[SERVER] Финиш: ${player.name}, дистанция=${distance}`);
+
         const allFinished = room.players.every(p => p.finished);
         if (allFinished) {
             const results = [...room.players].sort((a, b) => b.distance - a.distance);
             io.to(roomId).emit('show_results', results);
             room.state = 'finished';
-            console.log(`Гонка в комнате ${roomId} завершена`);
+            console.log(`[SERVER] Гонка в комнате ${roomId} завершена, результаты отправлены`);
         }
     });
 
-    // Отключение игрока
+    // --- ОТКЛЮЧЕНИЕ ИГРОКА ---
     socket.on('disconnect', () => {
+        console.log(`[SERVER] Игрок отключился: ${socket.id}`);
         for (let [roomId, room] of rooms) {
             const playerInRoom = room.players.find(p => p.id === socket.id);
             if (playerInRoom) {
@@ -145,26 +154,29 @@ io.on('connection', (socket) => {
                 break;
             }
         }
-        console.log('Игрок отключился:', socket.id);
     });
 });
 
 function handleLeave(socket, roomId) {
     const room = rooms.get(roomId);
     if (!room) return;
-    
+
     if (socket.id === room.admin) {
         io.to(roomId).emit('room_closed', 'Администратор покинул комнату');
         rooms.delete(roomId);
+        console.log(`[SERVER] Комната ${roomId} удалена (админ вышел)`);
         return;
     }
-    
+
     room.players = room.players.filter(p => p.id !== socket.id);
     socket.leave(roomId);
     io.to(roomId).emit('room_update', room.players);
+    console.log(`[SERVER] Игрок удалён из комнаты ${roomId}, осталось игроков: ${room.players.length}`);
 }
 
-server.listen(3000, () => {
-    console.log('Сервер запущен на порту 3000');
-    console.log('Адрес: http://localhost:3000');
+// --- ЗАПУСК СЕРВЕРА (порт для Render или локальный) ---
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`[SERVER] Сервер запущен на порту ${PORT}`);
+    console.log(`[SERVER] Адрес: http://localhost:${PORT}`);
 });
