@@ -1,7 +1,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { Pool } = require('pg'); // Подключение к PostgreSQL
+const { Pool } = require('pg');
 
 const app = express();
 const server = http.createServer(app);
@@ -14,10 +14,9 @@ const io = new Server(server, {
 // ========================
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false } // обязательно для облачных БД
+    ssl: { rejectUnauthorized: false }
 });
 
-// Проверка подключения к БД при старте
 pool.connect((err, client, release) => {
     if (err) {
         console.error('[DB] ❌ Ошибка подключения к TigerData:', err.message);
@@ -27,7 +26,6 @@ pool.connect((err, client, release) => {
     }
 });
 
-// Функция создания таблицы, если её нет
 async function initDb() {
     const createTableQuery = `
         CREATE TABLE IF NOT EXISTS tournament_results (
@@ -167,25 +165,34 @@ io.on('connection', (socket) => {
         console.log(`[SERVER] Гонка в комнате ${roomId} начнётся через 5 секунд (seed=${room.seed})`);
     });
 
-    // ---- ФИНИШ ИГРОКА И СОХРАНЕНИЕ РЕЗУЛЬТАТОВ ----
+    // ---- ФИНИШ ИГРОКА (сохранение в БД) ----
     socket.on('player_finished', async (data) => {
         const { roomId, distance } = data;
+        console.log(`[SERVER] 📥 player_finished: комната=${roomId}, дистанция=${distance}`);
+
         const room = rooms.get(roomId);
-        if (!room) return;
+        if (!room) {
+            console.log(`[SERVER] Комната ${roomId} не найдена`);
+            return;
+        }
 
         const player = room.players.find(p => p.id === socket.id);
-        if (!player || player.finished) return;
+        if (!player || player.finished) {
+            console.log(`[SERVER] Игрок ${socket.id} уже финишировал или не найден`);
+            return;
+        }
 
         player.distance = distance;
         player.finished = true;
-        console.log(`[SERVER] Финиш: ${player.name}, дистанция=${distance}`);
+        console.log(`[SERVER] ✅ Финиш: ${player.name}, дистанция=${distance}`);
 
         const allFinished = room.players.every(p => p.finished);
         if (allFinished) {
             const results = [...room.players].sort((a, b) => b.distance - a.distance);
             io.to(roomId).emit('show_results', results);
-            
-            // --- СОХРАНЕНИЕ В БАЗУ ДАННЫХ ---
+            console.log(`[SERVER] 🏁 Все финишировали, отправлены результаты`);
+
+            // ---- СОХРАНЕНИЕ В БАЗУ ДАННЫХ ----
             try {
                 const winner = results[0];
                 const participantsJson = JSON.stringify(results.map(p => ({ name: p.name, score: p.distance })));
@@ -194,11 +201,11 @@ io.on('connection', (socket) => {
                     VALUES ($1, $2, $3, $4)
                 `;
                 await pool.query(insertQuery, [roomId, winner.name, winner.distance, participantsJson]);
-                console.log(`[DB] Результаты турнира ${roomId} успешно сохранены. Победитель: ${winner.name} (${winner.distance})`);
+                console.log(`[DB] ✅ Результаты турнира ${roomId} сохранены. Победитель: ${winner.name} (${winner.distance})`);
             } catch (dbError) {
-                console.error('[DB] Ошибка сохранения результатов турнира:', dbError);
+                console.error('[DB] ❌ Ошибка сохранения результатов турнира:', dbError);
             }
-            
+
             room.state = 'finished';
             console.log(`[SERVER] Гонка в комнате ${roomId} завершена`);
         }
@@ -217,9 +224,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// ========================
-// ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ВЫХОДА ИГРОКА
-// ========================
 function handleLeave(socket, roomId) {
     const room = rooms.get(roomId);
     if (!room) return;
@@ -261,7 +265,6 @@ app.get('/api/tournaments', async (req, res) => {
 // ========================
 // ЗАПУСК СЕРВЕРА
 // ========================
-// Инициализируем БД перед стартом
 initDb();
 
 const PORT = process.env.PORT || 3000;
