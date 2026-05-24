@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const { Pool } = require('pg'); // Подключение к PostgreSQL
 
 const app = express();
 const server = http.createServer(app);
@@ -8,13 +9,57 @@ const io = new Server(server, {
     cors: { origin: "*" }
 });
 
-// Хранилище комнат
+// ========================
+// ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (TigerData)
+// ========================
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false } // обязательно для облачных БД
+});
+
+// Проверка подключения к БД при старте
+pool.connect((err, client, release) => {
+    if (err) {
+        console.error('[DB] ❌ Ошибка подключения к TigerData:', err.message);
+    } else {
+        console.log('[DB] ✅ Успешное подключение к TigerData!');
+        release();
+    }
+});
+
+// Функция создания таблицы, если её нет
+async function initDb() {
+    const createTableQuery = `
+        CREATE TABLE IF NOT EXISTS tournament_results (
+            id SERIAL PRIMARY KEY,
+            tournament_id VARCHAR(10) NOT NULL,
+            winner_name VARCHAR(50) NOT NULL,
+            winner_score FLOAT NOT NULL,
+            participants JSONB NOT NULL,
+            finished_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tournament_id ON tournament_results(tournament_id);
+    `;
+    try {
+        await pool.query(createTableQuery);
+        console.log('[DB] Таблица tournament_results готова.');
+    } catch (err) {
+        console.error('[DB] Ошибка инициализации таблицы:', err);
+    }
+}
+
+// ========================
+// ХРАНИЛИЩЕ КОМНАТ
+// ========================
 const rooms = new Map();
 
+// ========================
+// SOCKET.IO ОБРАБОТЧИКИ
+// ========================
 io.on('connection', (socket) => {
     console.log(`[SERVER] Игрок подключился: ${socket.id}`);
 
-    // --- СОЗДАНИЕ КОМНАТЫ ---
+    // ---- СОЗДАНИЕ КОМНАТЫ ----
     socket.on('create_room', (playerName) => {
         const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
         console.log(`[SERVER] create_room: имя=${playerName}, комната=${roomId}`);
@@ -41,7 +86,7 @@ io.on('connection', (socket) => {
         console.log(`[SERVER] Комната ${roomId} создана, игроков: ${room.players.length}`);
     });
 
-    // --- ПРИСОЕДИНЕНИЕ К КОМНАТЕ ---
+    // ---- ПРИСОЕДИНЕНИЕ К КОМНАТЕ ----
     socket.on('join_room', (data) => {
         const { roomId, playerName } = data;
         console.log(`[SERVER] join_room: комната=${roomId}, имя=${playerName}`);
@@ -70,7 +115,7 @@ io.on('connection', (socket) => {
         console.log(`[SERVER] ${playerName} присоединился, всего игроков: ${room.players.length}`);
     });
 
-    // --- ПЕРЕКЛЮЧЕНИЕ ГОТОВНОСТИ ---
+    // ---- ПЕРЕКЛЮЧЕНИЕ ГОТОВНОСТИ ----
     socket.on('player_ready', (roomId) => {
         const room = rooms.get(roomId);
         if (!room) return;
@@ -85,12 +130,12 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- ВЫХОД ИЗ КОМНАТЫ ---
+    // ---- ВЫХОД ИЗ КОМНАТЫ ----
     socket.on('leave_room', (roomId) => {
         handleLeave(socket, roomId);
     });
 
-    // --- СТАРТ ГОНКИ (только админ) ---
+    // ---- СТАРТ ГОНКИ (только админ) ----
     socket.on('start_race', (roomId) => {
         console.log(`[SERVER] start_race получен для комнаты ${roomId}`);
         const room = rooms.get(roomId);
@@ -122,8 +167,8 @@ io.on('connection', (socket) => {
         console.log(`[SERVER] Гонка в комнате ${roomId} начнётся через 5 секунд (seed=${room.seed})`);
     });
 
-    // --- ФИНИШ ИГРОКА ---
-    socket.on('player_finished', (data) => {
+    // ---- ФИНИШ ИГРОКА И СОХРАНЕНИЕ РЕЗУЛЬТАТОВ ----
+    socket.on('player_finished', async (data) => {
         const { roomId, distance } = data;
         const room = rooms.get(roomId);
         if (!room) return;
@@ -139,12 +184,27 @@ io.on('connection', (socket) => {
         if (allFinished) {
             const results = [...room.players].sort((a, b) => b.distance - a.distance);
             io.to(roomId).emit('show_results', results);
+            
+            // --- СОХРАНЕНИЕ В БАЗУ ДАННЫХ ---
+            try {
+                const winner = results[0];
+                const participantsJson = JSON.stringify(results.map(p => ({ name: p.name, score: p.distance })));
+                const insertQuery = `
+                    INSERT INTO tournament_results (tournament_id, winner_name, winner_score, participants)
+                    VALUES ($1, $2, $3, $4)
+                `;
+                await pool.query(insertQuery, [roomId, winner.name, winner.distance, participantsJson]);
+                console.log(`[DB] Результаты турнира ${roomId} успешно сохранены. Победитель: ${winner.name} (${winner.distance})`);
+            } catch (dbError) {
+                console.error('[DB] Ошибка сохранения результатов турнира:', dbError);
+            }
+            
             room.state = 'finished';
-            console.log(`[SERVER] Гонка в комнате ${roomId} завершена, результаты отправлены`);
+            console.log(`[SERVER] Гонка в комнате ${roomId} завершена`);
         }
     });
 
-    // --- ОТКЛЮЧЕНИЕ ИГРОКА ---
+    // ---- ОТКЛЮЧЕНИЕ ИГРОКА ----
     socket.on('disconnect', () => {
         console.log(`[SERVER] Игрок отключился: ${socket.id}`);
         for (let [roomId, room] of rooms) {
@@ -157,6 +217,9 @@ io.on('connection', (socket) => {
     });
 });
 
+// ========================
+// ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ВЫХОДА ИГРОКА
+// ========================
 function handleLeave(socket, roomId) {
     const room = rooms.get(roomId);
     if (!room) return;
@@ -174,7 +237,33 @@ function handleLeave(socket, roomId) {
     console.log(`[SERVER] Игрок удалён из комнаты ${roomId}, осталось игроков: ${room.players.length}`);
 }
 
-// --- ЗАПУСК СЕРВЕРА (порт для Render или локальный) ---
+// ========================
+// API: ПОЛУЧИТЬ ИСТОРИЮ ТУРНИРОВ
+// ========================
+app.get('/api/tournaments', async (req, res) => {
+    console.log('[API] Запрос истории турниров');
+    try {
+        const query = `
+            SELECT tournament_id, winner_name, winner_score, participants, finished_at
+            FROM tournament_results
+            ORDER BY finished_at DESC
+            LIMIT 20
+        `;
+        const result = await pool.query(query);
+        console.log(`[API] Отправлено ${result.rows.length} записей`);
+        res.json(result.rows);
+    } catch (err) {
+        console.error('[API] Ошибка получения истории:', err);
+        res.status(500).json({ error: 'Ошибка сервера при получении истории' });
+    }
+});
+
+// ========================
+// ЗАПУСК СЕРВЕРА
+// ========================
+// Инициализируем БД перед стартом
+initDb();
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`[SERVER] Сервер запущен на порту ${PORT}`);
