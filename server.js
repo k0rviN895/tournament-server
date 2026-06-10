@@ -55,32 +55,9 @@ async function initDb() {
             attempts_count INTEGER DEFAULT 0
         );
     `;
-    const createTournamentsTable = `
-        CREATE TABLE IF NOT EXISTS tournaments (
-            id SERIAL PRIMARY KEY,
-            room_code VARCHAR(10) UNIQUE NOT NULL,
-            admin_id INT REFERENCES players(id),
-            max_players INT DEFAULT 4,
-            lifetime_minutes INT DEFAULT 5,
-            status VARCHAR(20) DEFAULT 'waiting',
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-    `;
-    const createTournamentParticipantsTable = `
-        CREATE TABLE IF NOT EXISTS tournament_participants (
-            id SERIAL PRIMARY KEY,
-            tournament_id INT REFERENCES tournaments(id) ON DELETE CASCADE,
-            user_id INT REFERENCES players(id),
-            best_score FLOAT DEFAULT 0,
-            attempts INT DEFAULT 0,
-            joined_at TIMESTAMP DEFAULT NOW()
-        );
-    `;
     try {
         await pool.query(createPlayersTable);
         await pool.query(createStatsTable);
-        await pool.query(createTournamentsTable);
-        await pool.query(createTournamentParticipantsTable);
         console.log('[DB] Все таблицы готовы.');
     } catch (err) {
         console.error('[DB] Ошибка инициализации таблиц:', err);
@@ -111,11 +88,9 @@ async function verifyAdmin(token) {
 
 app.post('/api/register', async (req, res) => {
     console.log('[API] 📥 POST /api/register получен');
-    console.log('[API] Тело запроса:', req.body);
     
     const { full_name, username, email, password, vuz } = req.body;
     
-    // Проверка обязательных полей (vuz не обязателен)
     if (!full_name || !username || !email || !password) {
         console.log('[API] ❌ Ошибка: не все обязательные поля заполнены');
         return res.status(400).json({ error: 'Все поля (ФИО, логин, email, пароль) обязательны' });
@@ -157,7 +132,6 @@ app.post('/api/register', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
     console.log('[API] 📥 POST /api/login получен');
-    console.log('[API] Тело запроса:', req.body);
     
     const { username, password } = req.body;
     if (!username || !password) {
@@ -326,53 +300,96 @@ app.post('/api/admin/create-tournament', async (req, res) => {
 });
 
 // ========================
-// API ДЛЯ ПОЛУЧЕНИЯ СПИСКА ТУРНИРОВ
+// WEBSOCKET ОБРАБОТЧИКИ ДЛЯ ТУРНИРОВ
 // ========================
 
-app.get('/api/tournaments', async (req, res) => {
-    console.log('[API] 📥 GET /api/tournaments получен');
-    const client = await pool.connect();
-    try {
-        const result = await client.query(
-            `SELECT t.id, t.room_code, t.max_players, t.lifetime_minutes, t.status, 
-                    COUNT(tp.id) as current_players
-             FROM tournaments t
-             LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id
-             WHERE t.status != 'finished'
-             GROUP BY t.id`
-        );
-        console.log(`[API] ✅ Отправлено ${result.rows.length} турниров`);
-        res.json(result.rows);
-    } catch (err) {
-        console.error('[API] ❌ Ошибка получения турниров:', err);
-        res.status(500).json({ error: 'Ошибка сервера' });
-    } finally {
-        client.release();
-    }
-});
-
-// ========================
-// WEBSOCKET ОБРАБОТЧИКИ (для обычных комнат)
-// ========================
-
-const rooms = new Map();
+// Хранилище активных турниров (в памяти)
+const tournaments = new Map();
 
 io.on('connection', (socket) => {
-    console.log(`[SERVER] Игрок подключился: ${socket.id}`);
-    
-    socket.on('create_room', (data) => {
-        const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-        console.log(`[SERVER] Создана комната: ${roomId}`);
+    console.log(`[SERVER] Подключился: ${socket.id}`);
+
+    // Админ подключается к турниру
+    socket.on('join_tournament_admin', (roomCode) => {
+        socket.join(`admin_${roomCode}`);
+        console.log(`[SERVER] Админ подключился к турниру ${roomCode}`);
+        sendTournamentUpdate(roomCode);
     });
-    
-    socket.on('join_room', (data) => {
-        console.log(`[SERVER] Присоединение к комнате: ${data.roomId}`);
+
+    // Игрок подключается к турниру
+    socket.on('join_tournament_player', (roomCode) => {
+        socket.join(`player_${roomCode}`);
+        console.log(`[SERVER] Игрок подключился к турниру ${roomCode}`);
+        sendTournamentUpdate(roomCode);
     });
-    
+
+    // Админ начинает турнир
+    socket.on('start_tournament', (roomCode) => {
+        const tournament = tournaments.get(roomCode);
+        if (tournament) {
+            tournament.active = true;
+            io.to(`player_${roomCode}`).emit('tournament_started');
+            io.to(`admin_${roomCode}`).emit('tournament_started');
+            console.log(`[SERVER] Турнир ${roomCode} начат`);
+        }
+    });
+
+    // Админ завершает турнир
+    socket.on('end_tournament', (roomCode) => {
+        const tournament = tournaments.get(roomCode);
+        if (tournament) {
+            tournament.active = false;
+            io.to(`player_${roomCode}`).emit('tournament_ended');
+            io.to(`admin_${roomCode}`).emit('tournament_ended');
+            console.log(`[SERVER] Турнир ${roomCode} завершён`);
+        }
+    });
+
+    // Игрок отправляет результат
+    socket.on('submit_score', (data) => {
+        const { roomCode, nickname, score } = data;
+        console.log(`[SERVER] Результат: ${nickname} -> ${score} м (турнир ${roomCode})`);
+        
+        let tournament = tournaments.get(roomCode);
+        if (!tournament) {
+            tournament = { players: new Map(), active: false };
+            tournaments.set(roomCode, tournament);
+        }
+        
+        const player = tournament.players.get(nickname) || { best_score: 0, attempts: 0 };
+        player.attempts++;
+        player.best_score = Math.max(player.best_score, score);
+        tournament.players.set(nickname, player);
+        
+        sendTournamentUpdate(roomCode);
+    });
+
+    // Выход из турнира
+    socket.on('leave_tournament', (roomCode) => {
+        socket.leave(`player_${roomCode}`);
+        socket.leave(`admin_${roomCode}`);
+        console.log(`[SERVER] Пользователь покинул турнир ${roomCode}`);
+    });
+
+    // Отключение
     socket.on('disconnect', () => {
-        console.log(`[SERVER] Игрок отключился: ${socket.id}`);
+        console.log(`[SERVER] Отключился: ${socket.id}`);
     });
 });
+
+function sendTournamentUpdate(roomCode) {
+    const tournament = tournaments.get(roomCode);
+    if (!tournament) return;
+    
+    const players = Array.from(tournament.players.entries()).map(([nickname, data]) => ({
+        nickname,
+        best_score: data.best_score,
+        attempts: data.attempts
+    }));
+    
+    io.to(`admin_${roomCode}`).emit('tournament_update', players);
+    io.to(`player_${roomCode}`).emit('tournament_update', players);
+}
 
 // ========================
 // ЗАПУСК СЕРВЕРА
