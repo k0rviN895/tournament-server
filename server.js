@@ -31,7 +31,7 @@ pool.connect((err, client, release) => {
     }
 });
 
-// Инициализация таблиц (если их нет)
+// Инициализация таблиц
 async function initDb() {
     const createPlayersTable = `
         CREATE TABLE IF NOT EXISTS players (
@@ -41,6 +41,7 @@ async function initDb() {
             email VARCHAR(100) UNIQUE,
             password_hash TEXT NOT NULL,
             role VARCHAR(20) DEFAULT 'user',
+            vuz TEXT DEFAULT '',
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
     `;
@@ -89,19 +90,14 @@ initDb();
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 // ========================
 
-// Middleware для проверки JWT и роли admin
 async function verifyAdmin(token) {
     try {
         const secret = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
         const decoded = jwt.verify(token, secret);
-        
         const client = await pool.connect();
         const res = await client.query('SELECT role FROM players WHERE id = $1', [decoded.userId]);
         client.release();
-        
-        if (res.rows.length === 0 || res.rows[0].role !== 'admin') {
-            return null;
-        }
+        if (res.rows.length === 0 || res.rows[0].role !== 'admin') return null;
         return decoded;
     } catch (err) {
         return null;
@@ -112,9 +108,8 @@ async function verifyAdmin(token) {
 // API ДЛЯ АВТОРИЗАЦИИ
 // ========================
 
-// Регистрация
 app.post('/api/register', async (req, res) => {
-    const { full_name, username, email, password } = req.body;
+    const { full_name, username, email, password, vuz } = req.body;
     if (!full_name || !username || !email || !password) {
         return res.status(400).json({ error: 'Все поля обязательны' });
     }
@@ -128,8 +123,9 @@ app.post('/api/register', async (req, res) => {
 
         const password_hash = await bcrypt.hash(password, 10);
         const result = await client.query(
-            'INSERT INTO players (full_name, username, email, password_hash, role) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-            [full_name, username, email, password_hash, 'user']
+            `INSERT INTO players (full_name, username, email, password_hash, role, vuz) 
+             VALUES ($1, $2, $3, $4, 'user', $5) RETURNING id`,
+            [full_name, username, email, password_hash, vuz || '']
         );
         const userId = result.rows[0].id;
 
@@ -147,7 +143,6 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// Логин
 app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
@@ -173,6 +168,32 @@ app.post('/api/login', async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Ошибка сервера' });
+    } finally {
+        client.release();
+    }
+});
+
+// ========================
+// API ДЛЯ ПРОФИЛЯ ПОЛЬЗОВАТЕЛЯ
+// ========================
+
+app.get('/api/user/:userId', async (req, res) => {
+    const userId = parseInt(req.params.userId);
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Требуется авторизация' });
+    }
+
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            'SELECT id, full_name, username, email, vuz, role FROM players WHERE id = $1',
+            [userId]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Пользователь не найден' });
+        }
+        res.json(result.rows[0]);
     } finally {
         client.release();
     }
@@ -263,7 +284,7 @@ app.get('/api/tournaments', async (req, res) => {
 });
 
 // ========================
-// ОБНОВЛЕНИЕ СТАТИСТИКИ ИГРОКА (ПОСЛЕ ИГРЫ)
+// ОБНОВЛЕНИЕ СТАТИСТИКИ ИГРОКА
 // ========================
 
 app.post('/api/update-stats', async (req, res) => {
