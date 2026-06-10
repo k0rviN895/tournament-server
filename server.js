@@ -114,9 +114,11 @@ app.post('/api/register', async (req, res) => {
     console.log('[API] Тело запроса:', req.body);
     
     const { full_name, username, email, password, vuz } = req.body;
+    
+    // Проверка обязательных полей (vuz не обязателен)
     if (!full_name || !username || !email || !password) {
-        console.log('[API] ❌ Ошибка: не все поля заполнены');
-        return res.status(400).json({ error: 'Все поля обязательны' });
+        console.log('[API] ❌ Ошибка: не все обязательные поля заполнены');
+        return res.status(400).json({ error: 'Все поля (ФИО, логин, email, пароль) обязательны' });
     }
 
     const client = await pool.connect();
@@ -128,10 +130,12 @@ app.post('/api/register', async (req, res) => {
         }
 
         const password_hash = await bcrypt.hash(password, 10);
+        const userVuz = vuz || '';
+        
         const result = await client.query(
             `INSERT INTO players (full_name, username, email, password_hash, role, vuz) 
              VALUES ($1, $2, $3, $4, 'user', $5) RETURNING id`,
-            [full_name, username, email, password_hash, vuz || '']
+            [full_name, username, email, password_hash, userVuz]
         );
         const userId = result.rows[0].id;
         console.log(`[API] ✅ Пользователь создан с id=${userId}`);
@@ -359,12 +363,10 @@ io.on('connection', (socket) => {
     socket.on('create_room', (data) => {
         const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
         console.log(`[SERVER] Создана комната: ${roomId}`);
-        // ... остальная логика
     });
     
     socket.on('join_room', (data) => {
         console.log(`[SERVER] Присоединение к комнате: ${data.roomId}`);
-        // ... остальная логика
     });
     
     socket.on('disconnect', () => {
