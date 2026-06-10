@@ -220,8 +220,6 @@ app.post('/api/admin/create-tournament', async (req, res) => {
     console.log('[API] Тело запроса:', JSON.stringify(req.body, null, 2));
     
     const authHeader = req.headers.authorization;
-    console.log('[API] Authorization header:', authHeader ? 'присутствует' : 'ОТСУТСТВУЕТ');
-    
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         console.log('[API] ❌ Отсутствует токен');
         return res.status(401).json({ error: 'Требуется авторизация' });
@@ -296,12 +294,24 @@ io.on('connection', (socket) => {
 
     socket.on('join_tournament_admin', (roomCode) => {
         socket.join(`admin_${roomCode}`);
+        
+        if (!tournaments.has(roomCode)) {
+            tournaments.set(roomCode, { players: new Map(), active: false });
+            console.log(`[SERVER] Создана запись для турнира ${roomCode} в памяти`);
+        }
+        
         console.log(`[SERVER] Админ подключился к турниру ${roomCode}`);
         sendTournamentUpdate(roomCode);
     });
 
     socket.on('join_tournament_player', (roomCode) => {
         socket.join(`player_${roomCode}`);
+        
+        if (!tournaments.has(roomCode)) {
+            tournaments.set(roomCode, { players: new Map(), active: false });
+            console.log(`[SERVER] Создана запись для турнира ${roomCode} в памяти`);
+        }
+        
         console.log(`[SERVER] Игрок подключился к турниру ${roomCode}`);
         sendTournamentUpdate(roomCode);
     });
@@ -314,7 +324,11 @@ io.on('connection', (socket) => {
             io.to(`admin_${roomCode}`).emit('tournament_started');
             console.log(`[SERVER] Турнир ${roomCode} начат`);
         } else {
-            console.log(`[SERVER] Турнир ${roomCode} не найден`);
+            console.log(`[SERVER] Турнир ${roomCode} не найден в памяти, создаём...`);
+            tournaments.set(roomCode, { players: new Map(), active: true });
+            io.to(`player_${roomCode}`).emit('tournament_started');
+            io.to(`admin_${roomCode}`).emit('tournament_started');
+            console.log(`[SERVER] Турнир ${roomCode} создан и начат`);
         }
     });
 
@@ -338,6 +352,7 @@ io.on('connection', (socket) => {
         if (!tournament) {
             tournament = { players: new Map(), active: false };
             tournaments.set(roomCode, tournament);
+            console.log(`[SERVER] Создана запись для турнира ${roomCode} при отправке результата`);
         }
         
         const player = tournament.players.get(nickname) || { best_score: 0, attempts: 0 };
@@ -361,7 +376,10 @@ io.on('connection', (socket) => {
 
 function sendTournamentUpdate(roomCode) {
     const tournament = tournaments.get(roomCode);
-    if (!tournament) return;
+    if (!tournament) {
+        console.log(`[SERVER] Не удалось отправить обновление: турнир ${roomCode} не найден`);
+        return;
+    }
     
     const players = Array.from(tournament.players.entries()).map(([nickname, data]) => ({
         nickname,
@@ -369,6 +387,7 @@ function sendTournamentUpdate(roomCode) {
         attempts: data.attempts
     }));
     
+    console.log(`[SERVER] Отправка обновления для турнира ${roomCode}, игроков: ${players.length}`);
     io.to(`admin_${roomCode}`).emit('tournament_update', players);
     io.to(`player_${roomCode}`).emit('tournament_update', players);
 }
