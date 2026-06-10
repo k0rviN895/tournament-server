@@ -31,7 +31,9 @@ pool.connect((err, client, release) => {
     }
 });
 
-// Инициализация таблиц
+// ========================
+// ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ
+// ========================
 async function initDb() {
     const createPlayersTable = `
         CREATE TABLE IF NOT EXISTS players (
@@ -89,7 +91,6 @@ initDb();
 // ========================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 // ========================
-
 async function verifyAdmin(token) {
     try {
         const secret = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
@@ -109,8 +110,12 @@ async function verifyAdmin(token) {
 // ========================
 
 app.post('/api/register', async (req, res) => {
+    console.log('[API] 📥 POST /api/register получен');
+    console.log('[API] Тело запроса:', req.body);
+    
     const { full_name, username, email, password, vuz } = req.body;
     if (!full_name || !username || !email || !password) {
+        console.log('[API] ❌ Ошибка: не все поля заполнены');
         return res.status(400).json({ error: 'Все поля обязательны' });
     }
 
@@ -118,6 +123,7 @@ app.post('/api/register', async (req, res) => {
     try {
         const check = await client.query('SELECT id FROM players WHERE username = $1 OR email = $2', [username, email]);
         if (check.rows.length > 0) {
+            console.log('[API] ❌ Пользователь с таким логином или email уже существует');
             return res.status(409).json({ error: 'Имя пользователя или email уже заняты' });
         }
 
@@ -128,15 +134,17 @@ app.post('/api/register', async (req, res) => {
             [full_name, username, email, password_hash, vuz || '']
         );
         const userId = result.rows[0].id;
+        console.log(`[API] ✅ Пользователь создан с id=${userId}`);
 
         await client.query('INSERT INTO player_stats (user_id) VALUES ($1)', [userId]);
 
         const secret = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
         const token = jwt.sign({ userId, username, role: 'user' }, secret, { expiresIn: '30d' });
 
+        console.log('[API] ✅ Регистрация успешна, токен отправлен');
         res.status(201).json({ token, userId, username, role: 'user' });
     } catch (err) {
-        console.error(err);
+        console.error('[API] ❌ Ошибка сервера:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
     } finally {
         client.release();
@@ -144,8 +152,12 @@ app.post('/api/register', async (req, res) => {
 });
 
 app.post('/api/login', async (req, res) => {
+    console.log('[API] 📥 POST /api/login получен');
+    console.log('[API] Тело запроса:', req.body);
+    
     const { username, password } = req.body;
     if (!username || !password) {
+        console.log('[API] ❌ Ошибка: логин или пароль не указаны');
         return res.status(400).json({ error: 'Логин и пароль обязательны' });
     }
 
@@ -153,20 +165,23 @@ app.post('/api/login', async (req, res) => {
     try {
         const result = await client.query('SELECT * FROM players WHERE username = $1', [username]);
         if (result.rows.length === 0) {
+            console.log('[API] ❌ Пользователь не найден');
             return res.status(401).json({ error: 'Неверный логин или пароль' });
         }
         const user = result.rows[0];
         const valid = await bcrypt.compare(password, user.password_hash);
         if (!valid) {
+            console.log('[API] ❌ Неверный пароль');
             return res.status(401).json({ error: 'Неверный логин или пароль' });
         }
 
         const secret = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
         const token = jwt.sign({ userId: user.id, username: user.username, role: user.role }, secret, { expiresIn: '30d' });
 
+        console.log(`[API] ✅ Вход выполнен для пользователя ${username}`);
         res.json({ token, userId: user.id, username: user.username, role: user.role });
     } catch (err) {
-        console.error(err);
+        console.error('[API] ❌ Ошибка сервера:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
     } finally {
         client.release();
@@ -179,8 +194,11 @@ app.post('/api/login', async (req, res) => {
 
 app.get('/api/user/:userId', async (req, res) => {
     const userId = parseInt(req.params.userId);
+    console.log(`[API] 📥 GET /api/user/${userId} получен`);
+    
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        console.log('[API] ❌ Отсутствует или неверный токен');
         return res.status(401).json({ error: 'Требуется авторизация' });
     }
 
@@ -191,8 +209,10 @@ app.get('/api/user/:userId', async (req, res) => {
             [userId]
         );
         if (result.rows.length === 0) {
+            console.log('[API] ❌ Пользователь не найден');
             return res.status(404).json({ error: 'Пользователь не найден' });
         }
+        console.log('[API] ✅ Профиль отправлен');
         res.json(result.rows[0]);
     } finally {
         client.release();
@@ -200,18 +220,59 @@ app.get('/api/user/:userId', async (req, res) => {
 });
 
 // ========================
-// API ДЛЯ АДМИНИСТРАТОРА (ТУРНИРЫ)
+// API ДЛЯ ОБНОВЛЕНИЯ СТАТИСТИКИ
+// ========================
+
+app.post('/api/update-stats', async (req, res) => {
+    console.log('[API] 📥 POST /api/update-stats получен');
+    const { userId, score } = req.body;
+    if (!userId || score === undefined) {
+        console.log('[API] ❌ Не хватает данных');
+        return res.status(400).json({ error: 'Не хватает данных' });
+    }
+
+    const client = await pool.connect();
+    try {
+        let stats = await client.query('SELECT max_score, attempts_count FROM player_stats WHERE user_id = $1', [userId]);
+        if (stats.rows.length === 0) {
+            await client.query('INSERT INTO player_stats (user_id) VALUES ($1)', [userId]);
+            stats = await client.query('SELECT max_score, attempts_count FROM player_stats WHERE user_id = $1', [userId]);
+        }
+        const oldMax = stats.rows[0].max_score;
+        const oldAttempts = stats.rows[0].attempts_count;
+        const newMax = Math.max(score, oldMax);
+        const newAttempts = oldAttempts + 1;
+
+        await client.query(
+            'UPDATE player_stats SET max_score = $1, attempts_count = $2 WHERE user_id = $3',
+            [newMax, newAttempts, userId]
+        );
+        console.log(`[API] ✅ Статистика обновлена: max_score=${newMax}, attempts_count=${newAttempts}`);
+        res.json({ max_score: newMax, attempts_count: newAttempts });
+    } catch (err) {
+        console.error('[API] ❌ Ошибка обновления статистики:', err);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    } finally {
+        client.release();
+    }
+});
+
+// ========================
+// API ДЛЯ АДМИНИСТРАТОРА (СОЗДАНИЕ ТУРНИРА)
 // ========================
 
 app.post('/api/admin/create-tournament', async (req, res) => {
+    console.log('[API] 📥 POST /api/admin/create-tournament получен');
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        console.log('[API] ❌ Отсутствует токен');
         return res.status(401).json({ error: 'Требуется авторизация' });
     }
 
     const token = authHeader.split(' ')[1];
     const admin = await verifyAdmin(token);
     if (!admin) {
+        console.log('[API] ❌ Доступ запрещён (не администратор)');
         return res.status(403).json({ error: 'Доступ только для администраторов' });
     }
 
@@ -244,6 +305,7 @@ app.post('/api/admin/create-tournament', async (req, res) => {
             [room_code, admin.userId, max_players, lifetime_minutes]
         );
         
+        console.log(`[API] ✅ Турнир создан с id=${result.rows[0].id}, код=${room_code}`);
         res.status(201).json({
             success: true,
             tournament_id: result.rows[0].id,
@@ -252,7 +314,7 @@ app.post('/api/admin/create-tournament', async (req, res) => {
         });
         
     } catch (err) {
-        console.error('[API] Ошибка создания турнира:', err);
+        console.error('[API] ❌ Ошибка создания турнира:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
     } finally {
         client.release();
@@ -260,10 +322,11 @@ app.post('/api/admin/create-tournament', async (req, res) => {
 });
 
 // ========================
-// API ДЛЯ ИГРОКОВ (ПОЛУЧЕНИЕ ТУРНИРОВ)
+// API ДЛЯ ПОЛУЧЕНИЯ СПИСКА ТУРНИРОВ
 // ========================
 
 app.get('/api/tournaments', async (req, res) => {
+    console.log('[API] 📥 GET /api/tournaments получен');
     const client = await pool.connect();
     try {
         const result = await client.query(
@@ -274,9 +337,10 @@ app.get('/api/tournaments', async (req, res) => {
              WHERE t.status != 'finished'
              GROUP BY t.id`
         );
+        console.log(`[API] ✅ Отправлено ${result.rows.length} турниров`);
         res.json(result.rows);
     } catch (err) {
-        console.error('[API] Ошибка получения турниров:', err);
+        console.error('[API] ❌ Ошибка получения турниров:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
     } finally {
         client.release();
@@ -284,42 +348,7 @@ app.get('/api/tournaments', async (req, res) => {
 });
 
 // ========================
-// ОБНОВЛЕНИЕ СТАТИСТИКИ ИГРОКА
-// ========================
-
-app.post('/api/update-stats', async (req, res) => {
-    const { userId, score } = req.body;
-    if (!userId || score === undefined) {
-        return res.status(400).json({ error: 'Не хватает данных' });
-    }
-
-    const client = await pool.connect();
-    try {
-        let stats = await client.query('SELECT max_score, attempts_count FROM player_stats WHERE user_id = $1', [userId]);
-        if (stats.rows.length === 0) {
-            await client.query('INSERT INTO player_stats (user_id) VALUES ($1)', [userId]);
-            stats = await client.query('SELECT max_score, attempts_count FROM player_stats WHERE user_id = $1', [userId]);
-        }
-        const oldMax = stats.rows[0].max_score;
-        const oldAttempts = stats.rows[0].attempts_count;
-        const newMax = Math.max(score, oldMax);
-        const newAttempts = oldAttempts + 1;
-
-        await client.query(
-            'UPDATE player_stats SET max_score = $1, attempts_count = $2 WHERE user_id = $3',
-            [newMax, newAttempts, userId]
-        );
-        res.json({ max_score: newMax, attempts_count: newAttempts });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Ошибка сервера' });
-    } finally {
-        client.release();
-    }
-});
-
-// ========================
-// WEBSOCKET ОБРАБОТЧИКИ (ДЛЯ ОБЫЧНЫХ КОМНАТ)
+// WEBSOCKET ОБРАБОТЧИКИ (для обычных комнат)
 // ========================
 
 const rooms = new Map();
@@ -327,14 +356,15 @@ const rooms = new Map();
 io.on('connection', (socket) => {
     console.log(`[SERVER] Игрок подключился: ${socket.id}`);
     
-    // Простая комната (без турнира) – можно оставить для обычной игры
     socket.on('create_room', (data) => {
         const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-        // ... (оставьте старую логику, если нужна)
+        console.log(`[SERVER] Создана комната: ${roomId}`);
+        // ... остальная логика
     });
     
     socket.on('join_room', (data) => {
-        // ... (старая логика)
+        console.log(`[SERVER] Присоединение к комнате: ${data.roomId}`);
+        // ... остальная логика
     });
     
     socket.on('disconnect', () => {
