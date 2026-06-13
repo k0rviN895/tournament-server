@@ -72,7 +72,6 @@ async function initDb() {
         CREATE TABLE IF NOT EXISTS tournament_players (
             id SERIAL PRIMARY KEY,
             tournament_id VARCHAR(20) REFERENCES tournaments(room_code) ON DELETE CASCADE,
-            user_id INT REFERENCES players(id),
             nickname VARCHAR(50) NOT NULL,
             best_score FLOAT DEFAULT 0,
             attempts INT DEFAULT 0,
@@ -387,25 +386,54 @@ app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
     const { roomCode } = req.params;
     console.log(`[API] 📥 GET /api/admin/export-tournament/${roomCode} получен`);
     
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Требуется авторизация' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const admin = await verifyAdmin(token);
+    if (!admin) {
+        return res.status(403).json({ error: 'Доступ только для администраторов' });
+    }
+    
     const client = await pool.connect();
     try {
-        const result = await client.query(
-            `SELECT tp.nickname, tp.best_score, tp.attempts 
+        // Получаем информацию о турнире
+        const tournamentInfo = await client.query(
+            'SELECT room_code, game_name FROM tournaments WHERE room_code = $1',
+            [roomCode]
+        );
+        
+        if (tournamentInfo.rows.length === 0) {
+            return res.status(404).json({ error: 'Турнир не найден' });
+        }
+        
+        const tournament = tournamentInfo.rows[0];
+        
+        // Получаем участников
+        const playersResult = await client.query(
+            `SELECT tp.nickname, tp.best_score, tp.attempts
              FROM tournament_players tp
              WHERE tp.tournament_id = $1
              ORDER BY tp.best_score DESC`,
             [roomCode]
         );
         
-        let csv = "Место;Ник;Лучший счёт;Попытки\n";
-        for (let i = 0; i < result.rows.length; i++) {
-            const row = result.rows[i];
-            csv += `${i+1};${row.nickname};${row.best_score};${row.attempts}\n`;
+        let csv = "Название турнира;Код комнаты;Ник участника;Результат (метры);Попытки\n";
+        
+        for (const row of playersResult.rows) {
+            csv += `${tournament.game_name};${tournament.room_code};${row.nickname};${row.best_score};${row.attempts}\n`;
+        }
+        
+        if (playersResult.rows.length === 0) {
+            csv += `${tournament.game_name};${tournament.room_code};Нет участников;;\n`;
         }
         
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="tournament_${roomCode}_results.csv"`);
         res.send('\uFEFF' + csv);
+        
     } catch (err) {
         console.error('[API] ❌ Ошибка экспорта:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
@@ -423,7 +451,6 @@ const tournaments = new Map();
 io.on('connection', (socket) => {
     console.log(`[SERVER] Подключился: ${socket.id}`);
 
-    // Подключение админа
     socket.on('join_tournament_admin', (roomCode) => {
         socket.join(`admin_${roomCode}`);
         
@@ -435,7 +462,6 @@ io.on('connection', (socket) => {
         sendTournamentUpdate(roomCode);
     });
 
-    // Подключение игрока
     socket.on('join_tournament_player', (roomCode) => {
         socket.join(`player_${roomCode}`);
         
@@ -447,7 +473,6 @@ io.on('connection', (socket) => {
         sendTournamentUpdate(roomCode);
     });
 
-    // Отправка результата
     socket.on('submit_score', (data) => {
         const { roomCode, nickname, score } = data;
         console.log(`[SERVER] Результат: ${nickname} -> ${score} м (турнир ${roomCode})`);
@@ -463,7 +488,7 @@ io.on('connection', (socket) => {
         player.best_score = Math.max(player.best_score, score);
         tournament.players.set(nickname, player);
         
-        // Сохраняем в базу данных
+        // Сохраняем в базу
         pool.query(
             `INSERT INTO tournament_players (tournament_id, nickname, best_score, attempts)
              VALUES ($1, $2, $3, $4)
@@ -475,14 +500,12 @@ io.on('connection', (socket) => {
         sendTournamentUpdate(roomCode);
     });
 
-    // Выход из турнира
     socket.on('leave_tournament', (roomCode) => {
         socket.leave(`player_${roomCode}`);
         socket.leave(`admin_${roomCode}`);
         console.log(`[SERVER] Пользователь покинул турнир ${roomCode}`);
     });
 
-    // Отключение
     socket.on('disconnect', () => {
         console.log(`[SERVER] Отключился: ${socket.id}`);
     });
