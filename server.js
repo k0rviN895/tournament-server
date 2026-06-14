@@ -91,6 +91,27 @@ async function initDb() {
 initDb();
 
 // ========================
+// АВТОМАТИЧЕСКОЕ ЗАВЕРШЕНИЕ ТУРНИРА ПО ТАЙМЕРУ
+// ========================
+setInterval(async () => {
+    const now = new Date();
+    try {
+        const result = await pool.query(
+            'UPDATE tournaments SET status = $1 WHERE status = $2 AND end_time < $3 RETURNING room_code',
+            ['finished', 'active', now]
+        );
+        
+        for (const row of result.rows) {
+            io.to(`player_${row.room_code}`).emit('tournament_ended');
+            io.to(`admin_${row.room_code}`).emit('tournament_ended');
+            console.log(`[SERVER] Турнир ${row.room_code} автоматически завершён по таймеру`);
+        }
+    } catch (err) {
+        console.error('[SERVER] Ошибка автоматического завершения:', err);
+    }
+}, 10000);
+
+// ========================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 // ========================
 async function verifyAdmin(token) {
@@ -228,7 +249,6 @@ app.get('/api/user/:userId', async (req, res) => {
 // API ДЛЯ ТУРНИРОВ
 // ========================
 
-// Получение информации о турнире
 app.get('/api/tournament/:code', async (req, res) => {
     const { code } = req.params;
     console.log(`[API] 📥 GET /api/tournament/${code} получен`);
@@ -248,7 +268,6 @@ app.get('/api/tournament/:code', async (req, res) => {
     }
 });
 
-// Создание турнира (админ)
 app.post('/api/admin/create-tournament', async (req, res) => {
     console.log('[API] 📥 POST /api/admin/create-tournament получен');
     console.log('[API] Тело запроса:', JSON.stringify(req.body, null, 2));
@@ -313,7 +332,6 @@ app.post('/api/admin/create-tournament', async (req, res) => {
     }
 });
 
-// Старт турнира (админ)
 app.post('/api/admin/start-tournament/:roomCode', async (req, res) => {
     const { roomCode } = req.params;
     console.log(`[API] 📥 POST /api/admin/start-tournament/${roomCode} получен`);
@@ -351,7 +369,6 @@ app.post('/api/admin/start-tournament/:roomCode', async (req, res) => {
     }
 });
 
-// Завершение турнира (админ)
 app.post('/api/admin/end-tournament/:roomCode', async (req, res) => {
     const { roomCode } = req.params;
     console.log(`[API] 📥 POST /api/admin/end-tournament/${roomCode} получен`);
@@ -381,25 +398,12 @@ app.post('/api/admin/end-tournament/:roomCode', async (req, res) => {
     }
 });
 
-// Экспорт результатов турнира (CSV)
 app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
     const { roomCode } = req.params;
     console.log(`[API] 📥 GET /api/admin/export-tournament/${roomCode} получен`);
     
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'Требуется авторизация' });
-    }
-    
-    const token = authHeader.split(' ')[1];
-    const admin = await verifyAdmin(token);
-    if (!admin) {
-        return res.status(403).json({ error: 'Доступ только для администраторов' });
-    }
-    
     const client = await pool.connect();
     try {
-        // Получаем информацию о турнире
         const tournamentInfo = await client.query(
             'SELECT room_code, game_name FROM tournaments WHERE room_code = $1',
             [roomCode]
@@ -411,7 +415,6 @@ app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
         
         const tournament = tournamentInfo.rows[0];
         
-        // Получаем участников
         const playersResult = await client.query(
             `SELECT tp.nickname, tp.best_score, tp.attempts
              FROM tournament_players tp
@@ -488,7 +491,6 @@ io.on('connection', (socket) => {
         player.best_score = Math.max(player.best_score, score);
         tournament.players.set(nickname, player);
         
-        // Сохраняем в базу
         pool.query(
             `INSERT INTO tournament_players (tournament_id, nickname, best_score, attempts)
              VALUES ($1, $2, $3, $4)
@@ -515,11 +517,13 @@ function sendTournamentUpdate(roomCode) {
     const tournament = tournaments.get(roomCode);
     if (!tournament) return;
     
-    const players = Array.from(tournament.players.entries()).map(([nickname, data]) => ({
-        nickname,
-        best_score: data.best_score,
-        attempts: data.attempts
-    }));
+    const players = Array.from(tournament.players.entries())
+        .map(([nickname, data]) => ({
+            nickname,
+            best_score: data.best_score,
+            attempts: data.attempts
+        }))
+        .sort((a, b) => b.best_score - a.best_score);
     
     io.to(`admin_${roomCode}`).emit('tournament_update', players);
     io.to(`player_${roomCode}`).emit('tournament_update', players);
