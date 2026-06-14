@@ -416,21 +416,23 @@ app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
         const tournament = tournamentInfo.rows[0];
         
         const playersResult = await client.query(
-            `SELECT tp.nickname, tp.best_score, tp.attempts
+            `SELECT tp.nickname, tp.best_score, tp.attempts, p.full_name
              FROM tournament_players tp
+             LEFT JOIN players p ON tp.nickname = p.username
              WHERE tp.tournament_id = $1
              ORDER BY tp.best_score DESC`,
             [roomCode]
         );
         
-        let csv = "Название турнира;Код комнаты;Ник участника;Результат (метры);Попытки\n";
+        let csv = "Название турнира;Код комнаты;ФИО участника;Ник участника;Результат (метры);Попытки\n";
         
         for (const row of playersResult.rows) {
-            csv += `${tournament.game_name};${tournament.room_code};${row.nickname};${row.best_score};${row.attempts}\n`;
+            const fullName = row.full_name || row.nickname;
+            csv += `${tournament.game_name};${tournament.room_code};${fullName};${row.nickname};${row.best_score};${row.attempts}\n`;
         }
         
         if (playersResult.rows.length === 0) {
-            csv += `${tournament.game_name};${tournament.room_code};Нет участников;;\n`;
+            csv += `${tournament.game_name};${tournament.room_code};Нет участников;;;\n`;
         }
         
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
