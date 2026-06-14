@@ -290,7 +290,6 @@ app.post('/api/admin/create-tournament', async (req, res) => {
         return res.status(400).json({ error: 'Максимум игроков от 1 до 100' });
     }
     
-    // ЛЮБОЕ ВРЕМЯ от 1 до 1440 минут (24 часа)
     if (!lifetime_minutes || lifetime_minutes < 1 || lifetime_minutes > 1440) {
         console.log('[API] ❌ Неверное время');
         return res.status(400).json({ error: 'Время должно быть от 1 до 1440 минут' });
@@ -514,6 +513,7 @@ io.on('connection', (socket) => {
         }
     });
     
+    // ========== НОВЫЙ ОБРАБОТЧИК ДЛЯ ПОЛУЧЕНИЯ СТАТУСА ==========
     socket.on('get_tournament_status', (roomCode) => {
         const tournament = tournaments.get(roomCode);
         const isActive = tournament ? tournament.active : false;
