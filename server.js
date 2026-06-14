@@ -236,6 +236,27 @@ app.get('/api/tournament/:code', async (req, res) => {
     }
 });
 
+// НОВЫЙ API ДЛЯ ПОЛУЧЕНИЯ СПИСКА ИГРОКОВ ТУРНИРА
+app.get('/api/tournament/players/:roomCode', async (req, res) => {
+    const { roomCode } = req.params;
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            `SELECT nickname, best_score, attempts 
+             FROM tournament_players 
+             WHERE tournament_id = $1 
+             ORDER BY best_score DESC`,
+            [roomCode]
+        );
+        res.json({ items: result.rows });
+    } catch (err) {
+        console.error('[API] Ошибка получения игроков:', err);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    } finally {
+        client.release();
+    }
+});
+
 app.post('/api/admin/create-tournament', async (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -280,9 +301,7 @@ app.post('/api/admin/create-tournament', async (req, res) => {
     }
 });
 
-// ========================
-// СТАРТ ТУРНИРА (ИСПРАВЛЕННЫЙ РАСЧЁТ ВРЕМЕНИ)
-// ========================
+// СТАРТ ТУРНИРА (С ПРАВИЛЬНЫМ РАСЧЁТОМ ВРЕМЕНИ)
 app.post('/api/admin/start-tournament/:roomCode', async (req, res) => {
     const { roomCode } = req.params;
     
@@ -329,7 +348,6 @@ app.post('/api/admin/start-tournament/:roomCode', async (req, res) => {
         
         const endTimeISO = result.rows[0].end_time.toISOString();
         
-        // Отправляем событие админу (для WebSocket, если используется)
         io.to(`admin_${roomCode}`).emit('tournament_started');
         
         console.log(`[API] ✅ Турнир ${roomCode} начат, окончание: ${endTimeISO}`);
@@ -448,11 +466,13 @@ io.on('connection', (socket) => {
         player.best_score = Math.max(player.best_score, score);
         tournament.players.set(nickname, player);
         
+        // Отправляем обновление админу через WebSocket
         const players = Array.from(tournament.players.entries())
             .map(([n, d]) => ({ nickname: n, best_score: d.best_score, attempts: d.attempts }))
             .sort((a, b) => b.best_score - a.best_score);
         io.to(`admin_${roomCode}`).emit('tournament_update', players);
         
+        // Сохраняем в базу данных
         try {
             await pool.query(
                 `INSERT INTO tournament_players (tournament_id, nickname, best_score, attempts)
