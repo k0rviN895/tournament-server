@@ -17,6 +17,7 @@ const io = new Server(server, {
 // ========================
 // ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (TigerData)
 // ========================
+
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
@@ -34,6 +35,7 @@ pool.connect((err, client, release) => {
 // ========================
 // ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ
 // ========================
+
 async function initDb() {
     const createPlayersTable = `
         CREATE TABLE IF NOT EXISTS players (
@@ -47,6 +49,7 @@ async function initDb() {
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
     `;
+
     const createStatsTable = `
         CREATE TABLE IF NOT EXISTS player_stats (
             id SERIAL PRIMARY KEY,
@@ -55,6 +58,7 @@ async function initDb() {
             attempts_count INTEGER DEFAULT 0
         );
     `;
+
     const createTournamentsTable = `
         CREATE TABLE IF NOT EXISTS tournaments (
             id SERIAL PRIMARY KEY,
@@ -68,6 +72,7 @@ async function initDb() {
             created_at TIMESTAMP DEFAULT NOW()
         );
     `;
+
     const createTournamentPlayersTable = `
         CREATE TABLE IF NOT EXISTS tournament_players (
             id SERIAL PRIMARY KEY,
@@ -78,21 +83,36 @@ async function initDb() {
             joined_at TIMESTAMP DEFAULT NOW()
         );
     `;
+
     try {
         await pool.query(createPlayersTable);
         await pool.query(createStatsTable);
         await pool.query(createTournamentsTable);
         await pool.query(createTournamentPlayersTable);
+        
+        // Добавляем UNIQUE constraint если его нет
+        await pool.query(`
+            ALTER TABLE tournament_players 
+            DROP CONSTRAINT IF EXISTS tournament_players_tournament_id_nickname_key
+        `);
+        await pool.query(`
+            ALTER TABLE tournament_players 
+            ADD CONSTRAINT tournament_players_tournament_id_nickname_key 
+            UNIQUE (tournament_id, nickname)
+        `);
+        
         console.log('[DB] Все таблицы готовы.');
     } catch (err) {
         console.error('[DB] Ошибка инициализации таблиц:', err);
     }
 }
+
 initDb();
 
 // ========================
 // АВТОМАТИЧЕСКОЕ ЗАВЕРШЕНИЕ ТУРНИРА ПО ТАЙМЕРУ
 // ========================
+
 setInterval(async () => {
     const now = new Date();
     try {
@@ -114,6 +134,7 @@ setInterval(async () => {
 // ========================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 // ========================
+
 async function verifyAdmin(token) {
     try {
         const secret = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
@@ -134,12 +155,9 @@ async function verifyAdmin(token) {
 
 app.post('/api/register', async (req, res) => {
     console.log('[API] 📥 POST /api/register получен');
-    console.log('[API] Тело запроса:', req.body);
-    
     const { full_name, username, email, password, vuz } = req.body;
-    
+
     if (!full_name || !username || !email || !password) {
-        console.log('[API] ❌ Ошибка: не все обязательные поля заполнены');
         return res.status(400).json({ error: 'Все поля (ФИО, логин, email, пароль) обязательны' });
     }
 
@@ -147,27 +165,23 @@ app.post('/api/register', async (req, res) => {
     try {
         const check = await client.query('SELECT id FROM players WHERE username = $1 OR email = $2', [username, email]);
         if (check.rows.length > 0) {
-            console.log('[API] ❌ Пользователь с таким логином или email уже существует');
             return res.status(409).json({ error: 'Имя пользователя или email уже заняты' });
         }
 
         const password_hash = await bcrypt.hash(password, 10);
         const userVuz = vuz || '';
-        
         const result = await client.query(
-            `INSERT INTO players (full_name, username, email, password_hash, role, vuz) 
+            `INSERT INTO players (full_name, username, email, password_hash, role, vuz)
              VALUES ($1, $2, $3, $4, 'user', $5) RETURNING id`,
             [full_name, username, email, password_hash, userVuz]
         );
-        const userId = result.rows[0].id;
-        console.log(`[API] ✅ Пользователь создан с id=${userId}`);
 
+        const userId = result.rows[0].id;
         await client.query('INSERT INTO player_stats (user_id) VALUES ($1)', [userId]);
 
         const secret = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
         const token = jwt.sign({ userId, username, role: 'user' }, secret, { expiresIn: '30d' });
 
-        console.log('[API] ✅ Регистрация успешна, токен отправлен');
         res.status(201).json({ token, userId, username, role: 'user' });
     } catch (err) {
         console.error('[API] ❌ Ошибка сервера:', err);
@@ -179,11 +193,9 @@ app.post('/api/register', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
     console.log('[API] 📥 POST /api/login получен');
-    console.log('[API] Тело запроса:', req.body);
-    
     const { username, password } = req.body;
+
     if (!username || !password) {
-        console.log('[API] ❌ Ошибка: логин или пароль не указаны');
         return res.status(400).json({ error: 'Логин и пароль обязательны' });
     }
 
@@ -191,20 +203,18 @@ app.post('/api/login', async (req, res) => {
     try {
         const result = await client.query('SELECT * FROM players WHERE username = $1', [username]);
         if (result.rows.length === 0) {
-            console.log('[API] ❌ Пользователь не найден');
             return res.status(401).json({ error: 'Неверный логин или пароль' });
         }
+
         const user = result.rows[0];
         const valid = await bcrypt.compare(password, user.password_hash);
         if (!valid) {
-            console.log('[API] ❌ Неверный пароль');
             return res.status(401).json({ error: 'Неверный логин или пароль' });
         }
 
         const secret = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
         const token = jwt.sign({ userId: user.id, username: user.username, role: user.role }, secret, { expiresIn: '30d' });
 
-        console.log(`[API] ✅ Вход выполнен для пользователя ${username}`);
         res.json({ token, userId: user.id, username: user.username, role: user.role });
     } catch (err) {
         console.error('[API] ❌ Ошибка сервера:', err);
@@ -220,11 +230,9 @@ app.post('/api/login', async (req, res) => {
 
 app.get('/api/user/:userId', async (req, res) => {
     const userId = parseInt(req.params.userId);
-    console.log(`[API] 📥 GET /api/user/${userId} получен`);
-    
     const authHeader = req.headers.authorization;
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        console.log('[API] ❌ Отсутствует или неверный токен');
         return res.status(401).json({ error: 'Требуется авторизация' });
     }
 
@@ -235,10 +243,8 @@ app.get('/api/user/:userId', async (req, res) => {
             [userId]
         );
         if (result.rows.length === 0) {
-            console.log('[API] ❌ Пользователь не найден');
             return res.status(404).json({ error: 'Пользователь не найден' });
         }
-        console.log('[API] ✅ Профиль отправлен');
         res.json(result.rows[0]);
     } finally {
         client.release();
@@ -251,8 +257,6 @@ app.get('/api/user/:userId', async (req, res) => {
 
 app.get('/api/tournament/:code', async (req, res) => {
     const { code } = req.params;
-    console.log(`[API] 📥 GET /api/tournament/${code} получен`);
-    
     const client = await pool.connect();
     try {
         const result = await client.query(
@@ -270,31 +274,33 @@ app.get('/api/tournament/:code', async (req, res) => {
 
 app.post('/api/admin/create-tournament', async (req, res) => {
     console.log('[API] 📥 POST /api/admin/create-tournament получен');
-    console.log('[API] Тело запроса:', JSON.stringify(req.body, null, 2));
     
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        console.log('[API] ❌ Отсутствует токен');
         return res.status(401).json({ error: 'Требуется авторизация' });
     }
 
     const token = authHeader.split(' ')[1];
     const admin = await verifyAdmin(token);
     if (!admin) {
-        console.log('[API] ❌ Доступ запрещён (не администратор)');
         return res.status(403).json({ error: 'Доступ только для администраторов' });
     }
-    console.log(`[API] Администратор: userId=${admin.userId}`);
 
     const { room_code, game_name, max_players, lifetime_minutes } = req.body;
-    console.log(`[API] Параметры: room_code=${room_code}, game_name=${game_name}, max_players=${max_players}, lifetime_minutes=${lifetime_minutes}`);
     
+    // Проверка на undefined
+    const safeGameName = game_name && game_name !== 'undefined' ? game_name : 'Турнир';
+    
+    console.log(`[API] Параметры: room_code=${room_code}, game_name=${safeGameName}, max_players=${max_players}, lifetime_minutes=${lifetime_minutes}`);
+
     if (!room_code || room_code.length < 4 || room_code.length > 20) {
         return res.status(400).json({ error: 'Код должен быть от 4 до 20 символов' });
     }
+
     if (!max_players || max_players < 1 || max_players > 100) {
         return res.status(400).json({ error: 'Максимум игроков от 1 до 100' });
     }
+
     if (!lifetime_minutes || lifetime_minutes < 1 || lifetime_minutes > 1440) {
         return res.status(400).json({ error: 'Время должно быть от 1 до 1440 минут' });
     }
@@ -305,6 +311,7 @@ app.post('/api/admin/create-tournament', async (req, res) => {
             'SELECT id FROM tournaments WHERE room_code = $1 AND status != $2',
             [room_code, 'finished']
         );
+
         if (existing.rows.length > 0) {
             return res.status(409).json({ error: 'Комната с таким кодом уже существует' });
         }
@@ -313,9 +320,9 @@ app.post('/api/admin/create-tournament', async (req, res) => {
             `INSERT INTO tournaments (room_code, game_name, admin_id, max_players, lifetime_minutes, status)
              VALUES ($1, $2, $3, $4, $5, 'waiting')
              RETURNING id`,
-            [room_code, game_name || '', admin.userId, max_players, lifetime_minutes]
+            [room_code, safeGameName, admin.userId, max_players, lifetime_minutes]
         );
-        
+
         console.log(`[API] ✅ Турнир создан с id=${result.rows[0].id}, код=${room_code}`);
         res.status(201).json({
             success: true,
@@ -323,7 +330,6 @@ app.post('/api/admin/create-tournament', async (req, res) => {
             room_code: room_code,
             message: 'Турнир успешно создан'
         });
-        
     } catch (err) {
         console.error('[API] ❌ Ошибка создания турнира:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
@@ -335,35 +341,59 @@ app.post('/api/admin/create-tournament', async (req, res) => {
 app.post('/api/admin/start-tournament/:roomCode', async (req, res) => {
     const { roomCode } = req.params;
     console.log(`[API] 📥 POST /api/admin/start-tournament/${roomCode} получен`);
-    
+
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'Требуется авторизация' });
     }
-    
+
     const token = authHeader.split(' ')[1];
     const admin = await verifyAdmin(token);
     if (!admin) {
         return res.status(403).json({ error: 'Доступ только для администраторов' });
     }
-    
+
     const client = await pool.connect();
     try {
+        // Получаем lifetime_minutes
+        const tournament = await client.query(
+            'SELECT lifetime_minutes FROM tournaments WHERE room_code = $1',
+            [roomCode]
+        );
+        
+        if (tournament.rows.length === 0) {
+            return res.status(404).json({ error: 'Турнир не найден' });
+        }
+        
+        const lifetimeMinutes = tournament.rows[0].lifetime_minutes;
+        
+        // Устанавливаем end_time в UTC
+        const endTime = new Date();
+        endTime.setUTCMinutes(endTime.getUTCMinutes() + lifetimeMinutes);
+        
+        console.log(`[API] Текущее UTC: ${new Date().toISOString()}`);
+        console.log(`[API] lifetime_minutes: ${lifetimeMinutes}`);
+        console.log(`[API] end_time UTC: ${endTime.toISOString()}`);
+        
         const result = await client.query(
-            'UPDATE tournaments SET status = $1, end_time = NOW() + (lifetime_minutes * INTERVAL \'1 minute\') WHERE room_code = $2 AND status = $3 RETURNING end_time',
-            ['active', roomCode, 'waiting']
+            'UPDATE tournaments SET status = $1, end_time = $2 WHERE room_code = $3 AND status = $4 RETURNING end_time',
+            ['active', endTime, roomCode, 'waiting']
         );
         
         if (result.rows.length === 0) {
             return res.status(400).json({ error: 'Турнир не найден или уже начат' });
         }
         
-        const endTime = result.rows[0].end_time;
-        io.to(`player_${roomCode}`).emit('tournament_started', { end_time: endTime });
+        const endTimeISO = result.rows[0].end_time.toISOString();
+        
+        io.to(`player_${roomCode}`).emit('tournament_started', { end_time: endTimeISO });
         io.to(`admin_${roomCode}`).emit('tournament_started');
         
-        console.log(`[API] ✅ Турнир ${roomCode} начат, окончание: ${endTime}`);
-        res.json({ success: true, end_time: endTime });
+        console.log(`[API] ✅ Турнир ${roomCode} начат, окончание: ${endTimeISO}`);
+        res.json({ success: true, end_time: endTimeISO });
+    } catch (err) {
+        console.error('[API] ❌ Ошибка старта турнира:', err);
+        res.status(500).json({ error: 'Ошибка сервера' });
     } finally {
         client.release();
     }
@@ -372,25 +402,23 @@ app.post('/api/admin/start-tournament/:roomCode', async (req, res) => {
 app.post('/api/admin/end-tournament/:roomCode', async (req, res) => {
     const { roomCode } = req.params;
     console.log(`[API] 📥 POST /api/admin/end-tournament/${roomCode} получен`);
-    
+
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'Требуется авторизация' });
     }
-    
+
     const token = authHeader.split(' ')[1];
     const admin = await verifyAdmin(token);
     if (!admin) {
         return res.status(403).json({ error: 'Доступ только для администраторов' });
     }
-    
+
     const client = await pool.connect();
     try {
         await client.query('UPDATE tournaments SET status = $1 WHERE room_code = $2', ['finished', roomCode]);
-        
         io.to(`player_${roomCode}`).emit('tournament_ended');
         io.to(`admin_${roomCode}`).emit('tournament_ended');
-        
         console.log(`[API] ✅ Турнир ${roomCode} завершён`);
         res.json({ success: true });
     } finally {
@@ -401,20 +429,19 @@ app.post('/api/admin/end-tournament/:roomCode', async (req, res) => {
 app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
     const { roomCode } = req.params;
     console.log(`[API] 📥 GET /api/admin/export-tournament/${roomCode} получен`);
-    
+
     const client = await pool.connect();
     try {
         const tournamentInfo = await client.query(
             'SELECT room_code, game_name FROM tournaments WHERE room_code = $1',
             [roomCode]
         );
-        
+
         if (tournamentInfo.rows.length === 0) {
             return res.status(404).json({ error: 'Турнир не найден' });
         }
-        
+
         const tournament = tournamentInfo.rows[0];
-        
         const playersResult = await client.query(
             `SELECT tp.nickname, tp.best_score, tp.attempts, p.full_name
              FROM tournament_players tp
@@ -423,22 +450,21 @@ app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
              ORDER BY tp.best_score DESC`,
             [roomCode]
         );
-        
+
         let csv = "Название турнира;Код комнаты;ФИО участника;Ник участника;Результат (метры);Попытки\n";
         
         for (const row of playersResult.rows) {
             const fullName = row.full_name || row.nickname;
             csv += `${tournament.game_name};${tournament.room_code};${fullName};${row.nickname};${row.best_score};${row.attempts}\n`;
         }
-        
+
         if (playersResult.rows.length === 0) {
             csv += `${tournament.game_name};${tournament.room_code};Нет участников;;;\n`;
         }
-        
+
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="tournament_${roomCode}_results.csv"`);
         res.send('\uFEFF' + csv);
-        
     } catch (err) {
         console.error('[API] ❌ Ошибка экспорта:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
@@ -458,27 +484,23 @@ io.on('connection', (socket) => {
 
     socket.on('join_tournament_admin', (roomCode) => {
         socket.join(`admin_${roomCode}`);
-        
         if (!tournaments.has(roomCode)) {
             tournaments.set(roomCode, { players: new Map(), active: false });
         }
-        
         console.log(`[SERVER] Админ подключился к турниру ${roomCode}`);
         sendTournamentUpdate(roomCode);
     });
 
     socket.on('join_tournament_player', (roomCode) => {
         socket.join(`player_${roomCode}`);
-        
         if (!tournaments.has(roomCode)) {
             tournaments.set(roomCode, { players: new Map(), active: false });
         }
-        
         console.log(`[SERVER] Игрок подключился к турниру ${roomCode}`);
         sendTournamentUpdate(roomCode);
     });
 
-    socket.on('submit_score', (data) => {
+    socket.on('submit_score', async (data) => {
         const { roomCode, nickname, score } = data;
         console.log(`[SERVER] Результат: ${nickname} -> ${score} м (турнир ${roomCode})`);
         
@@ -487,20 +509,26 @@ io.on('connection', (socket) => {
             tournament = { players: new Map(), active: false };
             tournaments.set(roomCode, tournament);
         }
-        
+
         const player = tournament.players.get(nickname) || { best_score: 0, attempts: 0 };
         player.attempts++;
         player.best_score = Math.max(player.best_score, score);
         tournament.players.set(nickname, player);
-        
-        pool.query(
-            `INSERT INTO tournament_players (tournament_id, nickname, best_score, attempts)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (tournament_id, nickname) 
-             DO UPDATE SET best_score = EXCLUDED.best_score, attempts = EXCLUDED.attempts`,
-            [roomCode, nickname, player.best_score, player.attempts]
-        ).catch(err => console.error('[DB] Ошибка сохранения:', err));
-        
+
+        // Сохраняем в базу с обработкой ошибок
+        try {
+            await pool.query(
+                `INSERT INTO tournament_players (tournament_id, nickname, best_score, attempts)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (tournament_id, nickname) 
+                 DO UPDATE SET best_score = EXCLUDED.best_score, attempts = EXCLUDED.attempts`,
+                [roomCode, nickname, player.best_score, player.attempts]
+            );
+            console.log(`[DB] ✅ Результат сохранён: ${nickname} - ${player.best_score}м`);
+        } catch (err) {
+            console.error('[DB] ❌ Ошибка сохранения:', err);
+        }
+
         sendTournamentUpdate(roomCode);
     });
 
@@ -518,7 +546,7 @@ io.on('connection', (socket) => {
 function sendTournamentUpdate(roomCode) {
     const tournament = tournaments.get(roomCode);
     if (!tournament) return;
-    
+
     const players = Array.from(tournament.players.entries())
         .map(([nickname, data]) => ({
             nickname,
@@ -526,7 +554,7 @@ function sendTournamentUpdate(roomCode) {
             attempts: data.attempts
         }))
         .sort((a, b) => b.best_score - a.best_score);
-    
+
     io.to(`admin_${roomCode}`).emit('tournament_update', players);
     io.to(`player_${roomCode}`).emit('tournament_update', players);
 }
@@ -534,8 +562,9 @@ function sendTournamentUpdate(roomCode) {
 // ========================
 // ЗАПУСК СЕРВЕРА
 // ========================
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`[SERVER] Сервер запущен на порту ${PORT}`);
-    console.log(`[SERVER] Адрес: http://localhost:${PORT}`);
+    console.log(`[SERVER] Текущее UTC время: ${new Date().toISOString()}`);
 });
