@@ -95,19 +95,16 @@ async function initDb() {
         await pool.query(createTournamentPlayersTable);
         await pool.query(createLeaderboardTable);
         
-        // Добавляем UNIQUE constraint для tournament_players
         await pool.query(`
             ALTER TABLE tournament_players DROP CONSTRAINT IF EXISTS tournament_players_tournament_id_nickname_key;
             ALTER TABLE tournament_players ADD CONSTRAINT tournament_players_tournament_id_nickname_key UNIQUE (tournament_id, nickname);
         `);
         
-        // Добавляем UNIQUE constraint для leaderboard
         await pool.query(`
             ALTER TABLE leaderboard DROP CONSTRAINT IF EXISTS leaderboard_user_id_key;
             ALTER TABLE leaderboard ADD CONSTRAINT leaderboard_user_id_key UNIQUE (user_id);
         `);
         
-        // Создаём индекс для быстрой сортировки
         await pool.query(`
             CREATE INDEX IF NOT EXISTS idx_leaderboard_best_score ON leaderboard (best_score DESC);
         `);
@@ -219,7 +216,7 @@ app.post('/api/login', async (req, res) => {
 });
 
 // ========================
-// API ДЛЯ ПРОФИЛЯ ПОЛЬЗОВАТЕЛЯ (GET)
+// API ДЛЯ ПРОФИЛЯ
 // ========================
 app.get('/api/user/:userId', async (req, res) => {
     const userId = parseInt(req.params.userId);
@@ -242,9 +239,6 @@ app.get('/api/user/:userId', async (req, res) => {
     }
 });
 
-// ========================
-// API ДЛЯ ОБНОВЛЕНИЯ ПРОФИЛЯ (PUT)
-// ========================
 app.put('/api/user/:userId', async (req, res) => {
     const userId = parseInt(req.params.userId);
     console.log(`[API] 📥 PUT /api/user/${userId} получен`);
@@ -279,15 +273,10 @@ app.put('/api/user/:userId', async (req, res) => {
     
     const client = await pool.connect();
     try {
-        const result = await client.query(
-            'UPDATE players SET full_name = $1, email = $2, vuz = $3 WHERE id = $4 RETURNING id',
+        await client.query(
+            'UPDATE players SET full_name = $1, email = $2, vuz = $3 WHERE id = $4',
             [full_name, email, vuz || '', userId]
         );
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Пользователь не найден' });
-        }
-        
         console.log(`[API] ✅ Профиль пользователя ${userId} обновлён`);
         res.json({ success: true, message: 'Профиль обновлён' });
     } catch (err) {
@@ -484,11 +473,12 @@ app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
 });
 
 // ========================
-// API ДЛЯ ЛИДЕРБОРДА
+// API ДЛЯ ЛИДЕРБОРДА (С ЛОГАМИ)
 // ========================
 
 // Получить топ-100 игроков
 app.get('/api/leaderboard', async (req, res) => {
+    console.log('[API] 📥 GET /api/leaderboard получен');
     const client = await pool.connect();
     try {
         const result = await client.query(
@@ -501,6 +491,7 @@ app.get('/api/leaderboard', async (req, res) => {
              ORDER BY best_score DESC
              LIMIT 100`
         );
+        console.log(`[API] ✅ Лидерборд отправлен: ${result.rows.length} записей`);
         res.json({ items: result.rows });
     } catch (err) {
         console.error('[API] ❌ Ошибка получения лидерборда:', err);
@@ -510,28 +501,37 @@ app.get('/api/leaderboard', async (req, res) => {
     }
 });
 
-// Обновить результат игрока (вызывается после каждого забега)
+// Обновить результат игрока
 app.post('/api/leaderboard/update', async (req, res) => {
+    console.log('[API] 📥 POST /api/leaderboard/update получен');
+    console.log('[API] Тело запроса:', JSON.stringify(req.body, null, 2));
+    
     const { userId, username, fullName, score } = req.body;
     
     if (!userId || !username || score === undefined) {
+        console.log('[API] ❌ Не хватает данных');
         return res.status(400).json({ error: 'Не хватает данных' });
     }
+    
+    console.log(`[API] 📤 Обновление лидерборда: ${username} (ID: ${userId}) - ${score}м`);
+    console.log(`[API] fullName: ${fullName}`);
     
     const client = await pool.connect();
     try {
         // Проверяем, есть ли уже запись
+        console.log(`[API] Проверка существования записи для user_id=${userId}`);
         const existing = await client.query(
             'SELECT best_score FROM leaderboard WHERE user_id = $1',
             [userId]
         );
         
         if (existing.rows.length > 0) {
-            // Обновляем только если новый результат лучше
             const currentBest = existing.rows[0].best_score;
+            console.log(`[API] Текущий рекорд: ${currentBest}м`);
+            
             if (score > currentBest) {
                 await client.query(
-                    'UPDATE leaderboard SET best_score = $1, full_name = $2 WHERE user_id = $3',
+                    'UPDATE leaderboard SET best_score = $1, full_name = $2, updated_at = NOW() WHERE user_id = $3',
                     [score, fullName, userId]
                 );
                 console.log(`[API] ✅ Обновлён рекорд: ${username} - ${score}м (было ${currentBest}м)`);
@@ -540,8 +540,9 @@ app.post('/api/leaderboard/update', async (req, res) => {
             }
         } else {
             // Создаём новую запись
+            console.log(`[API] Создание новой записи для пользователя ${username}`);
             await client.query(
-                'INSERT INTO leaderboard (user_id, username, full_name, best_score) VALUES ($1, $2, $3, $4)',
+                'INSERT INTO leaderboard (user_id, username, full_name, best_score, updated_at) VALUES ($1, $2, $3, $4, NOW())',
                 [userId, username, fullName, score]
             );
             console.log(`[API] ✅ Добавлен новый игрок в лидерборд: ${username} - ${score}м`);
