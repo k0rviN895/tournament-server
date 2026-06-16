@@ -78,16 +78,38 @@ async function initDb() {
             joined_at TIMESTAMP DEFAULT NOW()
         );
     `;
+    const createLeaderboardTable = `
+        CREATE TABLE IF NOT EXISTS leaderboard (
+            id SERIAL PRIMARY KEY,
+            user_id INT REFERENCES players(id) ON DELETE CASCADE,
+            username VARCHAR(50) NOT NULL,
+            full_name VARCHAR(100) NOT NULL,
+            best_score FLOAT DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT NOW()
+        );
+    `;
     try {
         await pool.query(createPlayersTable);
         await pool.query(createStatsTable);
         await pool.query(createTournamentsTable);
         await pool.query(createTournamentPlayersTable);
+        await pool.query(createLeaderboardTable);
         
         // Добавляем UNIQUE constraint для tournament_players
         await pool.query(`
             ALTER TABLE tournament_players DROP CONSTRAINT IF EXISTS tournament_players_tournament_id_nickname_key;
             ALTER TABLE tournament_players ADD CONSTRAINT tournament_players_tournament_id_nickname_key UNIQUE (tournament_id, nickname);
+        `);
+        
+        // Добавляем UNIQUE constraint для leaderboard
+        await pool.query(`
+            ALTER TABLE leaderboard DROP CONSTRAINT IF EXISTS leaderboard_user_id_key;
+            ALTER TABLE leaderboard ADD CONSTRAINT leaderboard_user_id_key UNIQUE (user_id);
+        `);
+        
+        // Создаём индекс для быстрой сортировки
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_leaderboard_best_score ON leaderboard (best_score DESC);
         `);
         
         console.log('[DB] Все таблицы готовы.');
@@ -455,6 +477,79 @@ app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
         res.send('\uFEFF' + csv);
     } catch (err) {
         console.error('[API] ❌ Ошибка экспорта:', err);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    } finally {
+        client.release();
+    }
+});
+
+// ========================
+// API ДЛЯ ЛИДЕРБОРДА
+// ========================
+
+// Получить топ-100 игроков
+app.get('/api/leaderboard', async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            `SELECT 
+                ROW_NUMBER() OVER (ORDER BY best_score DESC) as rank,
+                username,
+                full_name,
+                best_score
+             FROM leaderboard
+             ORDER BY best_score DESC
+             LIMIT 100`
+        );
+        res.json({ items: result.rows });
+    } catch (err) {
+        console.error('[API] ❌ Ошибка получения лидерборда:', err);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    } finally {
+        client.release();
+    }
+});
+
+// Обновить результат игрока (вызывается после каждого забега)
+app.post('/api/leaderboard/update', async (req, res) => {
+    const { userId, username, fullName, score } = req.body;
+    
+    if (!userId || !username || score === undefined) {
+        return res.status(400).json({ error: 'Не хватает данных' });
+    }
+    
+    const client = await pool.connect();
+    try {
+        // Проверяем, есть ли уже запись
+        const existing = await client.query(
+            'SELECT best_score FROM leaderboard WHERE user_id = $1',
+            [userId]
+        );
+        
+        if (existing.rows.length > 0) {
+            // Обновляем только если новый результат лучше
+            const currentBest = existing.rows[0].best_score;
+            if (score > currentBest) {
+                await client.query(
+                    'UPDATE leaderboard SET best_score = $1, full_name = $2 WHERE user_id = $3',
+                    [score, fullName, userId]
+                );
+                console.log(`[API] ✅ Обновлён рекорд: ${username} - ${score}м (было ${currentBest}м)`);
+            } else {
+                console.log(`[API] ℹ️ Рекорд не обновлён: ${username} - ${score}м < ${currentBest}м`);
+            }
+        } else {
+            // Создаём новую запись
+            await client.query(
+                'INSERT INTO leaderboard (user_id, username, full_name, best_score) VALUES ($1, $2, $3, $4)',
+                [userId, username, fullName, score]
+            );
+            console.log(`[API] ✅ Добавлен новый игрок в лидерборд: ${username} - ${score}м`);
+        }
+        
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[API] ❌ Ошибка обновления лидерборда:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
     } finally {
         client.release();
