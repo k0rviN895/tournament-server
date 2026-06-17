@@ -239,9 +239,6 @@ app.get('/api/user/:userId', async (req, res) => {
     }
 });
 
-// ========================
-// ОБНОВЛЕНИЕ ПРОФИЛЯ (ИСПРАВЛЕННАЯ ВЕРСИЯ)
-// ========================
 app.put('/api/user/:userId', async (req, res) => {
     const userId = parseInt(req.params.userId);
     console.log(`[API] 📥 PUT /api/user/${userId} получен`);
@@ -278,15 +275,10 @@ app.put('/api/user/:userId', async (req, res) => {
     
     const client = await pool.connect();
     try {
-        const result = await client.query(
-            'UPDATE players SET full_name = $1, email = $2, vuz = $3 WHERE id = $4 RETURNING id',
+        await client.query(
+            'UPDATE players SET full_name = $1, email = $2, vuz = $3 WHERE id = $4',
             [full_name, email, vuz || '', userId]
         );
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Пользователь не найден' });
-        }
-        
         console.log(`[API] ✅ Профиль пользователя ${userId} обновлён`);
         res.json({ success: true, message: 'Профиль обновлён' });
     } catch (err) {
@@ -582,6 +574,51 @@ io.on('connection', (socket) => {
             tournaments.set(roomCode, { players: new Map(), active: false });
         }
         console.log(`[SERVER] Игрок подключился к турниру ${roomCode}`);
+    });
+    
+    socket.on('start_tournament', (roomCode) => {
+        const tournament = tournaments.get(roomCode);
+        if (tournament) {
+            tournament.active = true;
+            io.to(`player_${roomCode}`).emit('tournament_started');
+            io.to(`admin_${roomCode}`).emit('tournament_started');
+            console.log(`[SERVER] Турнир ${roomCode} начат`);
+        } else {
+            tournaments.set(roomCode, { players: new Map(), active: true });
+            io.to(`player_${roomCode}`).emit('tournament_started');
+            io.to(`admin_${roomCode}`).emit('tournament_started');
+            console.log(`[SERVER] Турнир ${roomCode} создан и начат`);
+        }
+    });
+    
+    socket.on('end_tournament', (roomCode) => {
+        const tournament = tournaments.get(roomCode);
+        if (tournament) {
+            tournament.active = false;
+            io.to(`player_${roomCode}`).emit('tournament_ended');
+            io.to(`admin_${roomCode}`).emit('tournament_ended');
+            console.log(`[SERVER] Турнир ${roomCode} завершён`);
+        }
+    });
+    
+    // ===== ПАУЗА ТУРНИРА =====
+    socket.on('pause_tournament', (roomCode) => {
+        console.log(`[SERVER] ⏸️ Турнир ${roomCode} поставлен на паузу`);
+        io.to(`player_${roomCode}`).emit('tournament_paused');
+        io.to(`admin_${roomCode}`).emit('tournament_paused');
+    });
+
+    socket.on('resume_tournament', (roomCode) => {
+        console.log(`[SERVER] ▶️ Турнир ${roomCode} возобновлён`);
+        io.to(`player_${roomCode}`).emit('tournament_resumed');
+        io.to(`admin_${roomCode}`).emit('tournament_resumed');
+    });
+    
+    socket.on('get_tournament_status', (roomCode) => {
+        const tournament = tournaments.get(roomCode);
+        const isActive = tournament ? tournament.active : false;
+        socket.emit('tournament_status', { active: isActive });
+        console.log(`[SERVER] Отправлен статус турнира ${roomCode}: active=${isActive}`);
     });
     
     socket.on('submit_score', async (data) => {
