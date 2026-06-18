@@ -177,7 +177,10 @@ app.post('/api/register', async (req, res) => {
         );
         const userId = result.rows[0].id;
         console.log(`[API] Пользователь создан с id=${userId}`);
-        await client.query('INSERT INTO player_stats (user_id) VALUES ($1)', [userId]);
+        
+        // ===== СОЗДАНИЕ СТАТИСТИКИ =====
+        await client.query('INSERT INTO player_stats (user_id, max_score, attempts_count) VALUES ($1, 0, 0)', [userId]);
+        
         const secret = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
         const token = jwt.sign({ userId, username, role: 'user' }, secret, { expiresIn: '30d' });
         res.status(201).json({ token, userId, username, role: 'user' });
@@ -283,6 +286,70 @@ app.put('/api/user/:userId', async (req, res) => {
         res.json({ success: true, message: 'Профиль обновлён' });
     } catch (err) {
         console.error('[API] Ошибка обновления профиля:', err);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    } finally {
+        client.release();
+    }
+});
+
+// ========================
+// API ДЛЯ СТАТИСТИКИ
+// ========================
+app.get('/api/user/:userId/stats', async (req, res) => {
+    const userId = parseInt(req.params.userId);
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Требуется авторизация' });
+    }
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            'SELECT user_id, max_score, attempts_count FROM player_stats WHERE user_id = $1',
+            [userId]
+        );
+        if (result.rows.length === 0) {
+            await client.query(
+                'INSERT INTO player_stats (user_id, max_score, attempts_count) VALUES ($1, 0, 0)',
+                [userId]
+            );
+            return res.json({ user_id: userId, max_score: 0, attempts_count: 0 });
+        }
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('[API] Ошибка получения статистики:', err);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    } finally {
+        client.release();
+    }
+});
+
+app.put('/api/user/:userId/stats', async (req, res) => {
+    const userId = parseInt(req.params.userId);
+    const { score } = req.body;
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Требуется авторизация' });
+    }
+    const client = await pool.connect();
+    try {
+        const existing = await client.query(
+            'SELECT attempts_count FROM player_stats WHERE user_id = $1',
+            [userId]
+        );
+        if (existing.rows.length === 0) {
+            await client.query(
+                'INSERT INTO player_stats (user_id, max_score, attempts_count) VALUES ($1, $2, 1)',
+                [userId, score || 0]
+            );
+        } else {
+            await client.query(
+                'UPDATE player_stats SET attempts_count = attempts_count + 1, max_score = GREATEST(max_score, $1) WHERE user_id = $2',
+                [score || 0, userId]
+            );
+        }
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[API] Ошибка обновления статистики:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
     } finally {
         client.release();
@@ -482,13 +549,11 @@ app.get('/api/admin/my-tournaments', async (req, res) => {
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'Требуется авторизация' });
     }
-    
     const token = authHeader.split(' ')[1];
     const admin = await verifyAdmin(token);
     if (!admin) {
         return res.status(403).json({ error: 'Доступ только для администраторов' });
     }
-    
     const client = await pool.connect();
     try {
         const result = await client.query(
@@ -539,27 +604,21 @@ app.get('/api/leaderboard', async (req, res) => {
 
 app.post('/api/leaderboard/update', async (req, res) => {
     console.log('[API] POST /api/leaderboard/update получен');
-    
     const { userId, username, fullName, score } = req.body;
-    
     if (!userId || !username || score === undefined) {
         console.log('[API] Не хватает данных');
         return res.status(400).json({ error: 'Не хватает данных' });
     }
-    
     console.log(`[API] Обновление лидерборда: ${username} (ID: ${userId}) - ${score}м`);
-    
     const client = await pool.connect();
     try {
         const existing = await client.query(
             'SELECT best_score FROM leaderboard WHERE user_id = $1',
             [userId]
         );
-        
         if (existing.rows.length > 0) {
             const currentBest = existing.rows[0].best_score;
             console.log(`[API] Текущий рекорд: ${currentBest}м`);
-            
             if (score > currentBest) {
                 await client.query(
                     'UPDATE leaderboard SET best_score = $1, full_name = $2, updated_at = NOW() WHERE user_id = $3',
@@ -577,7 +636,6 @@ app.post('/api/leaderboard/update', async (req, res) => {
             );
             console.log(`[API] Добавлен новый игрок в лидерборд: ${username} - ${score}м`);
         }
-        
         res.json({ success: true });
     } catch (err) {
         console.error('[API] Ошибка обновления лидерборда:', err);
@@ -651,7 +709,7 @@ io.on('connection', (socket) => {
     });
     
     socket.on('submit_score', async (data) => {
-        const { roomCode, nickname, score } = data;
+        const { roomCode, nickname, score, fullName } = data;
         console.log(`[SERVER] Результат: ${nickname} -> ${score} м (турнир ${roomCode})`);
         
         let tournament = tournaments.get(roomCode);
@@ -660,15 +718,28 @@ io.on('connection', (socket) => {
             tournaments.set(roomCode, tournament);
         }
         
-        const player = tournament.players.get(nickname) || { best_score: 0, attempts: 0 };
+        const player = tournament.players.get(nickname) || { 
+            best_score: 0, 
+            attempts: 0,
+            full_name: fullName || nickname
+        };
         player.attempts++;
         player.best_score = Math.max(player.best_score, score);
+        if (fullName) {
+            player.full_name = fullName;
+        }
         tournament.players.set(nickname, player);
         
         const players = Array.from(tournament.players.entries())
-            .map(([n, d]) => ({ nickname: n, best_score: d.best_score, attempts: d.attempts }))
+            .map(([n, d]) => ({ 
+                nickname: n, 
+                full_name: d.full_name || n,
+                best_score: d.best_score, 
+                attempts: d.attempts 
+            }))
             .sort((a, b) => b.best_score - a.best_score);
         io.to(`admin_${roomCode}`).emit('tournament_update', players);
+        io.to(`player_${roomCode}`).emit('tournament_update', players);
         
         try {
             await pool.query(
