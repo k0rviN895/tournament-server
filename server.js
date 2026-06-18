@@ -394,8 +394,15 @@ app.post('/api/admin/start-tournament/:roomCode', async (req, res) => {
             return res.status(404).json({ error: 'Турнир не найден или уже начат' });
         }
         const lifetimeMinutes = tournament.rows[0].lifetime_minutes;
+        
+        // ===== ПРАВИЛЬНЫЙ РАСЧЁТ ВРЕМЕНИ =====
         const now = new Date();
         const endTime = new Date(now.getTime() + (lifetimeMinutes * 60 * 1000));
+        
+        console.log(`[API] Текущее время: ${now.toISOString()}`);
+        console.log(`[API] lifetime_minutes: ${lifetimeMinutes}`);
+        console.log(`[API] end_time: ${endTime.toISOString()}`);
+        
         const result = await client.query(
             'UPDATE tournaments SET status = $1, end_time = $2 WHERE room_code = $3 AND status = $4 RETURNING end_time',
             ['active', endTime, roomCode, 'waiting']
@@ -468,42 +475,6 @@ app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
         res.send('\uFEFF' + csv);
     } catch (err) {
         console.error('[API] ❌ Ошибка экспорта:', err);
-        res.status(500).json({ error: 'Ошибка сервера' });
-    } finally {
-        client.release();
-    }
-});
-
-// ========================
-// API ДЛЯ ПОЛУЧЕНИЯ ТУРНИРОВ АДМИНИСТРАТОРА (МОИ ИГРЫ)
-// ========================
-app.get('/api/admin/my-tournaments', async (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'Требуется авторизация' });
-    }
-    
-    const token = authHeader.split(' ')[1];
-    const admin = await verifyAdmin(token);
-    if (!admin) {
-        return res.status(403).json({ error: 'Доступ только для администраторов' });
-    }
-    
-    const client = await pool.connect();
-    try {
-        const result = await client.query(
-            `SELECT id, room_code, game_name, status, 
-                    TO_CHAR(created_at, 'DD.MM.YYYY HH24:MI') as created_date,
-                    end_time,
-                    max_players
-             FROM tournaments 
-             WHERE admin_id = $1 
-             ORDER BY created_at DESC`,
-            [admin.userId]
-        );
-        res.json({ items: result.rows });
-    } catch (err) {
-        console.error('[API] ❌ Ошибка получения турниров:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
     } finally {
         client.release();
@@ -619,11 +590,6 @@ io.on('connection', (socket) => {
             io.to(`player_${roomCode}`).emit('tournament_started');
             io.to(`admin_${roomCode}`).emit('tournament_started');
             console.log(`[SERVER] Турнир ${roomCode} начат`);
-        } else {
-            tournaments.set(roomCode, { players: new Map(), active: true });
-            io.to(`player_${roomCode}`).emit('tournament_started');
-            io.to(`admin_${roomCode}`).emit('tournament_started');
-            console.log(`[SERVER] Турнир ${roomCode} создан и начат`);
         }
     });
     
