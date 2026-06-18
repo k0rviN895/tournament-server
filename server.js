@@ -475,6 +475,42 @@ app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
 });
 
 // ========================
+// API ДЛЯ ПОЛУЧЕНИЯ ТУРНИРОВ АДМИНИСТРАТОРА (МОИ ИГРЫ)
+// ========================
+app.get('/api/admin/my-tournaments', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Требуется авторизация' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const admin = await verifyAdmin(token);
+    if (!admin) {
+        return res.status(403).json({ error: 'Доступ только для администраторов' });
+    }
+    
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            `SELECT id, room_code, game_name, status, 
+                    TO_CHAR(created_at, 'DD.MM.YYYY HH24:MI') as created_date,
+                    end_time,
+                    max_players
+             FROM tournaments 
+             WHERE admin_id = $1 
+             ORDER BY created_at DESC`,
+            [admin.userId]
+        );
+        res.json({ items: result.rows });
+    } catch (err) {
+        console.error('[API] ❌ Ошибка получения турниров:', err);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    } finally {
+        client.release();
+    }
+});
+
+// ========================
 // API ДЛЯ ЛИДЕРБОРДА
 // ========================
 app.get('/api/leaderboard', async (req, res) => {
