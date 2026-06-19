@@ -589,7 +589,7 @@ app.post('/api/admin/end-tournament/:roomCode', async (req, res) => {
     const { roomCode } = req.params;
     const authHeader = req.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith('Bearer '')) {
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'Требуется авторизация' });
     }
 
