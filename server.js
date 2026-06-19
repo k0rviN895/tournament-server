@@ -160,6 +160,20 @@ async function verifyAdmin(token) {
     }
 }
 
+function formatDateWithTimezone(date, offsetHours) {
+    if (!date) return null;
+    const d = new Date(date);
+    d.setHours(d.getHours() + offsetHours);
+    
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    
+    return `${day}.${month}.${year} ${hours}:${minutes}`;
+}
+
 // ========================
 // API ДЛЯ АВТОРИЗАЦИИ
 // ========================
@@ -190,7 +204,6 @@ app.post('/api/register', async (req, res) => {
         const userId = result.rows[0].id;
         console.log(`[API] Пользователь создан с id=${userId}`);
 
-        // ===== СОЗДАНИЕ СТАТИСТИКИ =====
         await client.query('INSERT INTO player_stats (user_id, max_score, attempts_count) VALUES ($1, 0, 0)', [userId]);
 
         const secret = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
@@ -576,7 +589,7 @@ app.post('/api/admin/end-tournament/:roomCode', async (req, res) => {
     const { roomCode } = req.params;
     const authHeader = req.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!authHeader || !authHeader.startsWith('Bearer '')) {
         return res.status(401).json({ error: 'Требуется авторизация' });
     }
 
@@ -649,7 +662,7 @@ app.get('/api/admin/export-tournament/:roomCode', async (req, res) => {
 });
 
 // ========================
-// API ДЛЯ МОИХ ИГР (MyGames)
+// API ДЛЯ МОИХ ИГР (MyGames) С КОРРЕКТНЫМ ВРЕМЕНЕМ
 // ========================
 app.get('/api/admin/my-tournaments', async (req, res) => {
     const authHeader = req.headers.authorization;
@@ -667,7 +680,7 @@ app.get('/api/admin/my-tournaments', async (req, res) => {
     try {
         const result = await client.query(
             `SELECT id, room_code, game_name, status,
-                    TO_CHAR(created_at, 'DD.MM.YYYY HH24:MI') as created_date,
+                    created_at,
                     end_time,
                     max_players
              FROM tournaments
@@ -676,7 +689,23 @@ app.get('/api/admin/my-tournaments', async (req, res) => {
             [admin.userId]
         );
 
-        res.json({ items: result.rows });
+        // ===== ФОРМАТИРУЕМ ДАТЫ С УЧЁТОМ UTC+5 (Екатеринбург) =====
+        const items = result.rows.map(row => {
+            const createdDate = row.created_at ? formatDateWithTimezone(row.created_at, 5) : null;
+            const endTime = row.end_time ? formatDateWithTimezone(row.end_time, 5) : null;
+            
+            return {
+                id: row.id,
+                room_code: row.room_code,
+                game_name: row.game_name,
+                status: row.status,
+                created_date: createdDate,
+                end_time: endTime,
+                max_players: row.max_players
+            };
+        });
+
+        res.json({ items });
     } catch (err) {
         console.error('[API] Ошибка получения турниров:', err);
         res.status(500).json({ error: 'Ошибка сервера' });
