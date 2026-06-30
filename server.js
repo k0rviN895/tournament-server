@@ -6,6 +6,11 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 
+// ========================
+// ОТКЛЮЧАЕМ ПРОВЕРКУ SSL ДЛЯ TIGERDATA
+// ========================
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 const app = express();
 app.use(express.json());
 
@@ -21,7 +26,7 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: {
         rejectUnauthorized: false,
-        require: true
+        require: false
     }
 });
 
