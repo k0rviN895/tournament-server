@@ -16,11 +16,14 @@ const io = new Server(server, {
 });
 
 // ========================
-// ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (TigerData) - ИСПРАВЛЕНО!
+// ОТКЛЮЧАЕМ SSL ПРОВЕРКУ ДЛЯ TIGERDATA
 // ========================
 
-// ОТКЛЮЧАЕМ ПРОВЕРКУ SSL ДЛЯ TIGERDATA
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+// ========================
+// ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (TigerData)
+// ========================
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -33,7 +36,6 @@ const pool = new Pool({
 pool.connect((err, client, release) => {
     if (err) {
         console.error('[DB] ❌ Ошибка подключения к TigerData:', err.message);
-        console.error('[DB] Проверьте DATABASE_URL в настройках Render');
     } else {
         console.log('[DB] ✅ Успешное подключение к TigerData!');
         release();
@@ -41,23 +43,33 @@ pool.connect((err, client, release) => {
 });
 
 // ========================
-// НАСТРОЙКА EMAIL (С ВАШИМИ ДАННЫМИ!)
+// НАСТРОЙКА EMAIL (С ВАШИМИ ДАННЫМИ)
 // ========================
+
+console.log('[EMAIL] EMAIL_USER:', process.env.EMAIL_USER || 'debuggerurfu@mail.ru');
+console.log('[EMAIL] EMAIL_PASSWORD set:', !!process.env.EMAIL_PASSWORD);
 
 const transporter = nodemailer.createTransport({
     host: 'smtp.mail.ru',
-    port: 465,
-    secure: true,
+    port: 587,
+    secure: false,
     auth: {
-        user: 'debuggerurfu@mail.ru',        // ← ВАША ПОЧТА
-        pass: 'wvhsesnIh6OBAE1dzS3s'         // ← ВАШ ПАРОЛЬ
-    }
+        user: process.env.EMAIL_USER || 'debuggerurfu@mail.ru',
+        pass: process.env.EMAIL_PASSWORD || 'wvhsesnIh6OBAE1dzS3s'
+    },
+    tls: {
+        rejectUnauthorized: false,
+        ciphers: 'SSLv3'
+    },
+    connectionTimeout: 30000,
+    greetingTimeout: 30000,
+    socketTimeout: 30000
 });
 
-// Проверка подключения к почтовому серверу
 transporter.verify((error, success) => {
     if (error) {
-        console.error('[EMAIL] ❌ Ошибка подключения к почтовому серверу:', error);
+        console.error('[EMAIL] ❌ Ошибка подключения к почтовому серверу:', error.message);
+        console.error('[EMAIL] Проверьте EMAIL_USER и EMAIL_PASSWORD');
     } else {
         console.log('[EMAIL] ✅ Подключение к почтовому серверу успешно!');
     }
@@ -67,7 +79,6 @@ transporter.verify((error, success) => {
 // ОТПРАВКА ПИСЕМ
 // ========================
 
-// 1. Письмо с кнопкой подтверждения (для регистрации)
 async function sendVerificationEmail(email, token) {
     try {
         const serverUrl = process.env.SERVER_URL || 'https://your-server.onrender.com';
@@ -87,7 +98,7 @@ async function sendVerificationEmail(email, token) {
         `;
 
         await transporter.sendMail({
-            from: 'debuggerurfu@mail.ru',    // ← ВАША ПОЧТА
+            from: process.env.EMAIL_USER || 'debuggerurfu@mail.ru',
             to: email,
             subject: 'Подтверждение регистрации в DEBUGGER',
             html: html
@@ -96,12 +107,11 @@ async function sendVerificationEmail(email, token) {
         console.log(`[EMAIL] ✅ Письмо с кнопкой отправлено на ${email}`);
         return true;
     } catch (err) {
-        console.error('[EMAIL] ❌ Ошибка отправки письма подтверждения:', err);
+        console.error('[EMAIL] ❌ Ошибка отправки письма подтверждения:', err.message);
         return false;
     }
 }
 
-// 2. Письмо с кодом для восстановления пароля
 async function sendResetCodeEmail(email, code) {
     try {
         const html = `
@@ -114,7 +124,7 @@ async function sendResetCodeEmail(email, code) {
         `;
 
         await transporter.sendMail({
-            from: 'debuggerurfu@mail.ru',    // ← ВАША ПОЧТА
+            from: process.env.EMAIL_USER || 'debuggerurfu@mail.ru',
             to: email,
             subject: 'Восстановление пароля в DEBUGGER',
             html: html
@@ -123,7 +133,7 @@ async function sendResetCodeEmail(email, code) {
         console.log(`[EMAIL] ✅ Код для сброса пароля отправлен на ${email}`);
         return true;
     } catch (err) {
-        console.error('[EMAIL] ❌ Ошибка отправки кода восстановления:', err);
+        console.error('[EMAIL] ❌ Ошибка отправки кода восстановления:', err.message);
         return false;
     }
 }
@@ -251,7 +261,6 @@ async function initDb() {
             CREATE INDEX IF NOT EXISTS idx_player_runs_user_date ON player_runs (user_id, run_date);
         `);
 
-        // Помечаем существующих пользователей как подтверждённых
         await pool.query(`
             UPDATE players SET email_confirmed = TRUE WHERE email IS NOT NULL;
         `);
@@ -1243,7 +1252,6 @@ app.post('/api/achievements/save-run', async (req, res) => {
             [userId, score, coins, deaths, characterId, isPerfect]
         );
 
-        // Проверка "Хакатон" (24 забега за сутки)
         const todayRuns = await client.query(
             'SELECT COUNT(*) as count FROM player_runs WHERE user_id = $1 AND run_date = CURRENT_DATE',
             [userId]
@@ -1253,7 +1261,6 @@ app.post('/api/achievements/save-run', async (req, res) => {
             await checkAndUnlockAchievement(client, userId, 'hackathon');
         }
 
-        // Проверка "Идеально" (15 забегов подряд с >1000 очков)
         const perfectRuns = await client.query(
             `SELECT COUNT(*) as count FROM player_runs
              WHERE user_id = $1 AND is_perfect = TRUE
@@ -1265,7 +1272,6 @@ app.post('/api/achievements/save-run', async (req, res) => {
             await checkAndUnlockAchievement(client, userId, 'perfect');
         }
 
-        // Проверка "Традиции" (5 забегов подряд с одним персонажем)
         const lastRuns = await client.query(
             `SELECT character_id FROM player_runs
              WHERE user_id = $1
@@ -1473,5 +1479,5 @@ server.listen(PORT, () => {
     console.log(`[SERVER] Сервер запущен на порту ${PORT}`);
     console.log(`[SERVER] Адрес: http://localhost:${PORT}`);
     console.log(`[SERVER] Текущее UTC время: ${new Date().toISOString()}`);
-    console.log(`[EMAIL] Отправка писем с: debuggerurfu@mail.ru`);
+    console.log(`[EMAIL] Отправка писем с: ${process.env.EMAIL_USER || 'debuggerurfu@mail.ru'}`);
 });
