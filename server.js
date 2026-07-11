@@ -5,7 +5,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const nodemailer = require('nodemailer');
+const Unisender = require('unisender');
 
 const app = express();
 app.use(express.json());
@@ -43,43 +43,28 @@ pool.connect((err, client, release) => {
 });
 
 // ========================
-// НАСТРОЙКА EMAIL (GMAIL С ВАШИМИ ДАННЫМИ)
+// НАСТРОЙКА EMAIL (UNISENDER)
 // ========================
 
-// ВАЖНО: Пароль приложения без пробелов: kpwlwjzkshhxhevn
-// EMAIL: debuggerurfu@gmail.com
-
-console.log('[EMAIL] EMAIL_USER: debuggerurfu@gmail.com');
-console.log('[EMAIL] EMAIL_PASSWORD set:', !!'kpwlwjzkshhxhevn');
-
-const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false,
-    auth: {
-        user: 'debuggerurfu@gmail.com',
-        pass: 'kpwlwjzkshhxhevn'  // Пароль приложения (без пробелов)
-    },
-    tls: {
-        rejectUnauthorized: false
-    },
-    connectionTimeout: 30000,
-    greetingTimeout: 30000,
-    socketTimeout: 30000
+const unisender = new Unisender({
+    apiKey: '6f55gtn1sbypozxw63qwt3zdgbwkz5xj9quutqte',
+    encoding: 'utf8'
 });
 
-transporter.verify((error, success) => {
-    if (error) {
-        console.error('[EMAIL] ❌ Ошибка подключения к почтовому серверу:', error.message);
-        console.error('[EMAIL] Проверьте EMAIL_USER и EMAIL_PASSWORD');
-        console.error('[EMAIL] Убедитесь, что для почты создан пароль приложения');
+console.log('[EMAIL] Unisender API Key set: true');
+
+// Проверка подключения к Unisender
+unisender.getUserInfo((err, data) => {
+    if (err) {
+        console.error('[EMAIL] ❌ Ошибка подключения к Unisender:', err.message);
     } else {
-        console.log('[EMAIL] ✅ Подключение к почтовому серверу успешно!');
+        console.log('[EMAIL] ✅ Подключение к Unisender успешно!');
+        console.log('[EMAIL] Аккаунт:', data);
     }
 });
 
 // ========================
-// ОТПРАВКА ПИСЕМ
+// ОТПРАВКА ПИСЕМ ЧЕРЕЗ UNISENDER
 // ========================
 
 async function sendVerificationEmail(email, token) {
@@ -100,17 +85,22 @@ async function sendVerificationEmail(email, token) {
             <p>Если вы не регистрировались в игре, просто проигнорируйте это письмо.</p>
         `;
 
-        await transporter.sendMail({
-            from: 'debuggerurfu@gmail.com',
-            to: email,
+        const result = await unisender.sendEmail({
+            email: email,
+            sender_name: 'DEBUGGER Game',
+            sender_email: 'debuggerurfu@gmail.com',
             subject: 'Подтверждение регистрации в DEBUGGER',
-            html: html
+            body: html
         });
 
-        console.log(`[EMAIL] ✅ Письмо с кнопкой отправлено на ${email}`);
+        console.log(`[EMAIL] ✅ Письмо с кнопкой отправлено на ${email} через Unisender`);
+        console.log('[EMAIL] Ответ Unisender:', JSON.stringify(result));
         return true;
     } catch (err) {
-        console.error('[EMAIL] ❌ Ошибка отправки письма подтверждения:', err.message);
+        console.error('[EMAIL] ❌ Ошибка отправки письма подтверждения через Unisender:', err.message);
+        if (err.response) {
+            console.error('[EMAIL] Детали ошибки:', JSON.stringify(err.response));
+        }
         return false;
     }
 }
@@ -126,17 +116,18 @@ async function sendResetCodeEmail(email, code) {
             <p>Если вы не запрашивали восстановление пароля, просто проигнорируйте это письмо.</p>
         `;
 
-        await transporter.sendMail({
-            from: 'debuggerurfu@gmail.com',
-            to: email,
+        const result = await unisender.sendEmail({
+            email: email,
+            sender_name: 'DEBUGGER Game',
+            sender_email: 'debuggerurfu@gmail.com',
             subject: 'Восстановление пароля в DEBUGGER',
-            html: html
+            body: html
         });
 
-        console.log(`[EMAIL] ✅ Код для сброса пароля отправлен на ${email}`);
+        console.log(`[EMAIL] ✅ Код для сброса пароля отправлен на ${email} через Unisender`);
         return true;
     } catch (err) {
-        console.error('[EMAIL] ❌ Ошибка отправки кода восстановления:', err.message);
+        console.error('[EMAIL] ❌ Ошибка отправки кода восстановления через Unisender:', err.message);
         return false;
     }
 }
@@ -1482,5 +1473,5 @@ server.listen(PORT, () => {
     console.log(`[SERVER] Сервер запущен на порту ${PORT}`);
     console.log(`[SERVER] Адрес: http://localhost:${PORT}`);
     console.log(`[SERVER] Текущее UTC время: ${new Date().toISOString()}`);
-    console.log(`[EMAIL] Отправка писем с: debuggerurfu@gmail.com`);
+    console.log(`[EMAIL] Отправка писем через Unisender с: debuggerurfu@gmail.com`);
 });
