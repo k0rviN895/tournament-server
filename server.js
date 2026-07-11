@@ -43,23 +43,25 @@ pool.connect((err, client, release) => {
 });
 
 // ========================
-// НАСТРОЙКА EMAIL (С ВАШИМИ ДАННЫМИ)
+// НАСТРОЙКА EMAIL (GMAIL С ВАШИМИ ДАННЫМИ)
 // ========================
 
-console.log('[EMAIL] EMAIL_USER:', process.env.EMAIL_USER || 'debuggerurfu@mail.ru');
-console.log('[EMAIL] EMAIL_PASSWORD set:', !!process.env.EMAIL_PASSWORD);
+// ВАЖНО: Пароль приложения без пробелов: kpwlwjzkshhxhevn
+// EMAIL: debuggerurfu@gmail.com
+
+console.log('[EMAIL] EMAIL_USER: debuggerurfu@gmail.com');
+console.log('[EMAIL] EMAIL_PASSWORD set:', !!'kpwlwjzkshhxhevn');
 
 const transporter = nodemailer.createTransport({
-    host: 'smtp.mail.ru',
+    host: 'smtp.gmail.com',
     port: 587,
     secure: false,
     auth: {
-        user: process.env.EMAIL_USER || 'debuggerurfu@mail.ru',
-        pass: process.env.EMAIL_PASSWORD || 'wvhsesnIh6OBAE1dzS3s'
+        user: 'debuggerurfu@gmail.com',
+        pass: 'kpwlwjzkshhxhevn'  // Пароль приложения (без пробелов)
     },
     tls: {
-        rejectUnauthorized: false,
-        ciphers: 'SSLv3'
+        rejectUnauthorized: false
     },
     connectionTimeout: 30000,
     greetingTimeout: 30000,
@@ -70,6 +72,7 @@ transporter.verify((error, success) => {
     if (error) {
         console.error('[EMAIL] ❌ Ошибка подключения к почтовому серверу:', error.message);
         console.error('[EMAIL] Проверьте EMAIL_USER и EMAIL_PASSWORD');
+        console.error('[EMAIL] Убедитесь, что для почты создан пароль приложения');
     } else {
         console.log('[EMAIL] ✅ Подключение к почтовому серверу успешно!');
     }
@@ -98,7 +101,7 @@ async function sendVerificationEmail(email, token) {
         `;
 
         await transporter.sendMail({
-            from: process.env.EMAIL_USER || 'debuggerurfu@mail.ru',
+            from: 'debuggerurfu@gmail.com',
             to: email,
             subject: 'Подтверждение регистрации в DEBUGGER',
             html: html
@@ -124,7 +127,7 @@ async function sendResetCodeEmail(email, code) {
         `;
 
         await transporter.sendMail({
-            from: process.env.EMAIL_USER || 'debuggerurfu@mail.ru',
+            from: 'debuggerurfu@gmail.com',
             to: email,
             subject: 'Восстановление пароля в DEBUGGER',
             html: html
@@ -1479,5 +1482,5 @@ server.listen(PORT, () => {
     console.log(`[SERVER] Сервер запущен на порту ${PORT}`);
     console.log(`[SERVER] Адрес: http://localhost:${PORT}`);
     console.log(`[SERVER] Текущее UTC время: ${new Date().toISOString()}`);
-    console.log(`[EMAIL] Отправка писем с: ${process.env.EMAIL_USER || 'debuggerurfu@mail.ru'}`);
+    console.log(`[EMAIL] Отправка писем с: debuggerurfu@gmail.com`);
 });
