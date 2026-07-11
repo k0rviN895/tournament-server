@@ -21,7 +21,10 @@ const io = new Server(server, {
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+    ssl: {
+        rejectUnauthorized: false,
+        require: true
+    }
 });
 
 pool.connect((err, client, release) => {
