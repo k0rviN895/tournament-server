@@ -5,7 +5,6 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const Unisender = require('unisender');
 
 const app = express();
 app.use(express.json());
@@ -43,28 +42,18 @@ pool.connect((err, client, release) => {
 });
 
 // ========================
-// НАСТРОЙКА EMAIL (UNISENDER)
+// НАСТРОЙКА EMAIL (SENDSAY)
 // ========================
 
-const unisender = new Unisender({
-    apiKey: '6f55gtn1sbypozxw63qwt3zdgbwkz5xj9quutqte',
-    encoding: 'utf8'
-});
+const SENDS_API_KEY = '18W37LhemdLzoElNUJZRj4qkHsuoK6k_nxEU1rX_aO8TButz9mrGA59fXAq_mpZLO3hVRs-8792gmeE03LhwIWw';
+const SENDS_FROM_EMAIL = process.env.SENDSAY_FROM_EMAIL || 'debuggerurfu@gmail.com';
+const SENDS_FROM_NAME = process.env.SENDSAY_FROM_NAME || 'DEBUGGER Game';
 
-console.log('[EMAIL] Unisender API Key set: true');
-
-// Проверка подключения к Unisender
-unisender.getUserInfo((err, data) => {
-    if (err) {
-        console.error('[EMAIL] ❌ Ошибка подключения к Unisender:', err.message);
-    } else {
-        console.log('[EMAIL] ✅ Подключение к Unisender успешно!');
-        console.log('[EMAIL] Аккаунт:', data);
-    }
-});
+console.log('[EMAIL] Sendsay API Key set:', !!SENDS_API_KEY);
+console.log('[EMAIL] Отправитель:', SENDS_FROM_EMAIL);
 
 // ========================
-// ОТПРАВКА ПИСЕМ ЧЕРЕЗ UNISENDER
+// ОТПРАВКА ПИСЕМ ЧЕРЕЗ SENDSAY (HTTP API)
 // ========================
 
 async function sendVerificationEmail(email, token) {
@@ -85,22 +74,38 @@ async function sendVerificationEmail(email, token) {
             <p>Если вы не регистрировались в игре, просто проигнорируйте это письмо.</p>
         `;
 
-        const result = await unisender.sendEmail({
-            email: email,
-            sender_name: 'DEBUGGER Game',
-            sender_email: 'debuggerurfu@gmail.com',
-            subject: 'Подтверждение регистрации в DEBUGGER',
-            body: html
+        const url = 'https://api.sendsay.ru/request';
+
+        // Формируем параметры для Sendsay API
+        const params = new URLSearchParams();
+        params.append('action', 'issue.send');
+        params.append('apikey', SENDS_API_KEY);
+        params.append('from.email', SENDS_FROM_EMAIL);
+        params.append('from.name', SENDS_FROM_NAME);
+        params.append('to[0]', email);
+        params.append('subject', 'Подтверждение регистрации в DEBUGGER');
+        params.append('message.html', html);
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: params
         });
 
-        console.log(`[EMAIL] ✅ Письмо с кнопкой отправлено на ${email} через Unisender`);
-        console.log('[EMAIL] Ответ Unisender:', JSON.stringify(result));
-        return true;
-    } catch (err) {
-        console.error('[EMAIL] ❌ Ошибка отправки письма подтверждения через Unisender:', err.message);
-        if (err.response) {
-            console.error('[EMAIL] Детали ошибки:', JSON.stringify(err.response));
+        const data = await response.json();
+
+        if (data && data.status === 'ok') {
+            console.log(`[EMAIL] ✅ Письмо отправлено на ${email} через Sendsay`);
+            console.log('[EMAIL] Ответ:', JSON.stringify(data));
+            return true;
+        } else {
+            console.error('[EMAIL] ❌ Ошибка Sendsay:', data);
+            return false;
         }
+    } catch (err) {
+        console.error('[EMAIL] ❌ Ошибка отправки письма через Sendsay:', err.message);
         return false;
     }
 }
@@ -110,24 +115,41 @@ async function sendResetCodeEmail(email, code) {
         const html = `
             <h1>Восстановление пароля</h1>
             <p>Вы запросили восстановление пароля для игры DEBUGGER.</p>
-            <p>Ваш код для восстановления пароля: <strong style="font-size:24px;">${code}</strong></p>
-            <p>Введите этот код в игре для сброса пароля.</p>
-            <p>Код действителен в течение 1 часа.</p>
+            <p>Ваш код: <strong style="font-size:24px;">${code}</strong></p>
+            <p>Код действителен 1 час.</p>
             <p>Если вы не запрашивали восстановление пароля, просто проигнорируйте это письмо.</p>
         `;
 
-        const result = await unisender.sendEmail({
-            email: email,
-            sender_name: 'DEBUGGER Game',
-            sender_email: 'debuggerurfu@gmail.com',
-            subject: 'Восстановление пароля в DEBUGGER',
-            body: html
+        const url = 'https://api.sendsay.ru/request';
+
+        const params = new URLSearchParams();
+        params.append('action', 'issue.send');
+        params.append('apikey', SENDS_API_KEY);
+        params.append('from.email', SENDS_FROM_EMAIL);
+        params.append('from.name', SENDS_FROM_NAME);
+        params.append('to[0]', email);
+        params.append('subject', 'Восстановление пароля в DEBUGGER');
+        params.append('message.html', html);
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: params
         });
 
-        console.log(`[EMAIL] ✅ Код для сброса пароля отправлен на ${email} через Unisender`);
-        return true;
+        const data = await response.json();
+
+        if (data && data.status === 'ok') {
+            console.log(`[EMAIL] ✅ Код восстановления отправлен на ${email} через Sendsay`);
+            return true;
+        } else {
+            console.error('[EMAIL] ❌ Ошибка Sendsay:', data);
+            return false;
+        }
     } catch (err) {
-        console.error('[EMAIL] ❌ Ошибка отправки кода восстановления через Unisender:', err.message);
+        console.error('[EMAIL] ❌ Ошибка отправки кода через Sendsay:', err.message);
         return false;
     }
 }
@@ -1473,5 +1495,5 @@ server.listen(PORT, () => {
     console.log(`[SERVER] Сервер запущен на порту ${PORT}`);
     console.log(`[SERVER] Адрес: http://localhost:${PORT}`);
     console.log(`[SERVER] Текущее UTC время: ${new Date().toISOString()}`);
-    console.log(`[EMAIL] Отправка писем через Unisender с: debuggerurfu@gmail.com`);
+    console.log(`[EMAIL] Отправка писем через Sendsay с: ${SENDS_FROM_EMAIL}`);
 });
