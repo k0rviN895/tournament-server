@@ -53,7 +53,7 @@ console.log('[EMAIL] Sendsay API Key set:', !!SENDS_API_KEY);
 console.log('[EMAIL] Отправитель:', SENDS_FROM_EMAIL);
 
 // ========================
-// ОТПРАВКА ПИСЕМ ЧЕРЕЗ SENDSAY (HTTP API)
+// ОТПРАВКА ПИСЕМ ЧЕРЕЗ SENDSAY (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 // ========================
 
 async function sendVerificationEmail(email, token) {
@@ -74,9 +74,73 @@ async function sendVerificationEmail(email, token) {
             <p>Если вы не регистрировались в игре, просто проигнорируйте это письмо.</p>
         `;
 
-        const url = 'https://api.sendsay.ru/request';
+        // Правильный формат для Sendsay API
+        const requestBody = {
+            action: 'issue.send',
+            apikey: SENDS_API_KEY,
+            email: {
+                from: {
+                    email: SENDS_FROM_EMAIL,
+                    name: SENDS_FROM_NAME
+                },
+                to: [{ email: email }],
+                subject: 'Подтверждение регистрации в DEBUGGER',
+                message: {
+                    html: html
+                }
+            }
+        };
 
-        // Формируем параметры для Sendsay API
+        // Отправляем POST-запрос с правильным Content-Type
+        const response = await fetch('https://api.sendsay.ru/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        const data = await response.json();
+
+        if (data && data.status === 'ok') {
+            console.log(`[EMAIL] ✅ Письмо отправлено на ${email} через Sendsay`);
+            return true;
+        } else if (data && data.errors) {
+            console.error('[EMAIL] ❌ Ошибка Sendsay:', data.errors);
+            // Если ошибка "unsupportedapiversion", пробуем другой формат
+            if (data.errors.some(e => e.id === 'error/api/unsupportedapiversion')) {
+                console.log('[EMAIL] 🔄 Пробуем альтернативный формат...');
+                return await sendVerificationEmailAlt(email, token);
+            }
+            return false;
+        } else {
+            console.error('[EMAIL] ❌ Неизвестный ответ Sendsay:', data);
+            return false;
+        }
+    } catch (err) {
+        console.error('[EMAIL] ❌ Ошибка отправки письма через Sendsay:', err.message);
+        return false;
+    }
+}
+
+// Альтернативный метод (через URL-encoded параметры)
+async function sendVerificationEmailAlt(email, token) {
+    try {
+        const serverUrl = process.env.SERVER_URL || 'https://your-server.onrender.com';
+        const verificationLink = `${serverUrl}/api/verify-email?token=${token}`;
+        
+        const html = `
+            <h1>Подтверждение регистрации</h1>
+            <p>Для завершения регистрации в игре DEBUGGER нажмите на кнопку ниже:</p>
+            <a href="${verificationLink}" 
+               style="display:inline-block; padding:12px 24px; background:#4CAF50; color:white; text-decoration:none; border-radius:4px; font-size:16px;">
+                ✅ Подтвердить почту
+            </a>
+            <p>Или перейдите по ссылке:</p>
+            <p><a href="${verificationLink}">${verificationLink}</a></p>
+            <p>Ссылка действительна в течение 24 часов.</p>
+        `;
+
         const params = new URLSearchParams();
         params.append('action', 'issue.send');
         params.append('apikey', SENDS_API_KEY);
@@ -86,7 +150,7 @@ async function sendVerificationEmail(email, token) {
         params.append('subject', 'Подтверждение регистрации в DEBUGGER');
         params.append('message.html', html);
 
-        const response = await fetch(url, {
+        const response = await fetch('https://api.sendsay.ru/', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded'
@@ -97,59 +161,14 @@ async function sendVerificationEmail(email, token) {
         const data = await response.json();
 
         if (data && data.status === 'ok') {
-            console.log(`[EMAIL] ✅ Письмо отправлено на ${email} через Sendsay`);
-            console.log('[EMAIL] Ответ:', JSON.stringify(data));
+            console.log(`[EMAIL] ✅ Письмо отправлено на ${email} через Sendsay (alt)`);
             return true;
         } else {
-            console.error('[EMAIL] ❌ Ошибка Sendsay:', data);
+            console.error('[EMAIL] ❌ Ошибка Sendsay (alt):', data);
             return false;
         }
     } catch (err) {
-        console.error('[EMAIL] ❌ Ошибка отправки письма через Sendsay:', err.message);
-        return false;
-    }
-}
-
-async function sendResetCodeEmail(email, code) {
-    try {
-        const html = `
-            <h1>Восстановление пароля</h1>
-            <p>Вы запросили восстановление пароля для игры DEBUGGER.</p>
-            <p>Ваш код: <strong style="font-size:24px;">${code}</strong></p>
-            <p>Код действителен 1 час.</p>
-            <p>Если вы не запрашивали восстановление пароля, просто проигнорируйте это письмо.</p>
-        `;
-
-        const url = 'https://api.sendsay.ru/request';
-
-        const params = new URLSearchParams();
-        params.append('action', 'issue.send');
-        params.append('apikey', SENDS_API_KEY);
-        params.append('from.email', SENDS_FROM_EMAIL);
-        params.append('from.name', SENDS_FROM_NAME);
-        params.append('to[0]', email);
-        params.append('subject', 'Восстановление пароля в DEBUGGER');
-        params.append('message.html', html);
-
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: params
-        });
-
-        const data = await response.json();
-
-        if (data && data.status === 'ok') {
-            console.log(`[EMAIL] ✅ Код восстановления отправлен на ${email} через Sendsay`);
-            return true;
-        } else {
-            console.error('[EMAIL] ❌ Ошибка Sendsay:', data);
-            return false;
-        }
-    } catch (err) {
-        console.error('[EMAIL] ❌ Ошибка отправки кода через Sendsay:', err.message);
+        console.error('[EMAIL] ❌ Ошибка отправки письма через Sendsay (alt):', err.message);
         return false;
     }
 }
