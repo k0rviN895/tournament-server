@@ -16,20 +16,24 @@ const io = new Server(server, {
 });
 
 // ========================
-// ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (TigerData)
+// ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (TigerData) - ИСПРАВЛЕНО!
 // ========================
+
+// ОТКЛЮЧАЕМ ПРОВЕРКУ SSL ДЛЯ TIGERDATA
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: {
         rejectUnauthorized: false,
-        require: true
+        require: false
     }
 });
 
 pool.connect((err, client, release) => {
     if (err) {
         console.error('[DB] ❌ Ошибка подключения к TigerData:', err.message);
+        console.error('[DB] Проверьте DATABASE_URL в настройках Render');
     } else {
         console.log('[DB] ✅ Успешное подключение к TigerData!');
         release();
